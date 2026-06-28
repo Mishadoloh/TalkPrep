@@ -109,6 +109,22 @@ export default function Header() {
             </select>
           </div>
 
+          <Link href="/features" className="nav-link">
+            {getTranslation(locale, "navFeatures")}
+          </Link>
+          <Link href="/pricing" className="nav-link">
+            {getTranslation(locale, "navPricing")}
+          </Link>
+          <Link href="/faq" className="nav-link">
+            {getTranslation(locale, "navFaq")}
+          </Link>
+          <Link href="/about" className="nav-link">
+            {getTranslation(locale, "navAbout")}
+          </Link>
+          <Link href="/contact" className="nav-link">
+            {getTranslation(locale, "navContact")}
+          </Link>
+
           {loading ? (
             <span style={{ color: "var(--color-text-muted)", fontSize: "0.9rem" }}>
               {getTranslation(locale, "loading")}

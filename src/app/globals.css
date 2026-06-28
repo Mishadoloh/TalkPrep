@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap');
 @import "tailwindcss";
 
 /* 1. Global Reset & Theme Variables */
@@ -26,7 +27,8 @@
   --color-warning: #ffb300;
   --color-error: #ff5252;
   
-  --font-sans: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-title: 'Outfit', var(--font-sans);
   --font-mono: var(--font-geist-mono), monospace;
   
   --radius-sm: 8px;
@@ -59,6 +61,12 @@ body {
   line-height: 1.5;
   display: flex;
   flex-direction: column;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-title);
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 /* Background animated decorative blobs */
