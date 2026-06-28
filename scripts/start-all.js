@@ -14,20 +14,20 @@ const colors = {
 const services = [
   {
     name: "AUTH-SERVICE",
-    cmd: "node",
-    args: [path.join(__dirname, "../services/auth/server.js")],
+    cmd: "python",
+    args: [path.join(__dirname, "../services/auth/server.py")],
     color: colors.yellow
   },
   {
     name: "AI-SERVICE",
-    cmd: "node",
-    args: [path.join(__dirname, "../services/ai/server.js")],
+    cmd: "python",
+    args: [path.join(__dirname, "../services/ai/server.py")],
     color: colors.cyan
   },
   {
     name: "BILLING-SERVICE",
-    cmd: "node",
-    args: [path.join(__dirname, "../services/billing/server.js")],
+    cmd: "python",
+    args: [path.join(__dirname, "../services/billing/server.py")],
     color: colors.green
   },
   {
