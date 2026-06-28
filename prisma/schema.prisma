@@ -1,0 +1,57 @@
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id               String        @id @default(uuid())
+  email            String        @unique
+  username         String        @unique
+  passwordHash     String
+  isPro            Boolean       @default(false)
+  credits          Int           @default(1)
+  createdAt        DateTime      @default(now())
+  interviews       Interview[]
+  transactions     Transaction[]
+}
+
+model Interview {
+  id           String     @id @default(uuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         String     // e.g. "Frontend Engineer"
+  level        String     // e.g. "Senior"
+  status       String     // "IN_PROGRESS" | "COMPLETED"
+  language     String     @default("en-US") // e.g. "uk-UA", "es-ES"
+  overallScore Int?       // 0 - 100
+  feedback     String?    // Overall qualitative summary
+  createdAt    DateTime   @default(now())
+  questions    Question[]
+}
+
+model Question {
+  id           String    @id @default(uuid())
+  interviewId  String
+  interview    Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  questionText String
+  answerText   String?   // Recorded text response
+  score        Int?      // 0 - 100
+  critique     String?   // Specific suggestions
+  idealAnswer  String    // Example of perfect response
+  audioDuration Int?     // Duration in seconds
+}
+
+model Transaction {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amount    Float
+  credits   Int
+  type      String   // "PACK" | "SUBSCRIPTION"
+  status    String   // "SUCCESS" | "FAILED"
+  createdAt DateTime @default(now())
+}

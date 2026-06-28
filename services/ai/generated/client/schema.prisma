@@ -1,0 +1,34 @@
+datasource db {
+  provider = "sqlite"
+  url      = "file:./interviews.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+model Interview {
+  id           String     @id @default(uuid())
+  userId       String
+  role         String
+  level        String
+  status       String // "IN_PROGRESS" | "COMPLETED"
+  language     String     @default("en-US")
+  overallScore Int?
+  feedback     String?
+  createdAt    DateTime   @default(now())
+  questions    Question[]
+}
+
+model Question {
+  id            String    @id @default(uuid())
+  interviewId   String
+  interview     Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  questionText  String
+  answerText    String?
+  score         Int?
+  critique      String?
+  idealAnswer   String
+  audioDuration Int?
+}
