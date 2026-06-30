@@ -34,6 +34,7 @@ const services = [
     name: "NEXTJS-GATEWAY",
     cmd: "npx",
     args: ["next", "dev", "-p", "3005"],
+    cwd: path.join(__dirname, "../frontend"),
     color: colors.purple
   }
 ];
@@ -48,6 +49,7 @@ services.forEach(srv => {
   // Set SHELL option true on Windows to ensure 'npx' can resolve correctly
   const p = spawn(srv.cmd, srv.args, {
     shell: true,
+    cwd: srv.cwd || path.join(__dirname, "../"),
     env: { ...process.env, NODE_TLS_REJECT_UNAUTHORIZED: "0" }
   });
   

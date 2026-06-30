@@ -16,7 +16,7 @@ services:
 
   nextjs-gateway:
     build:
-      context: .
+      context: ./frontend
       dockerfile: Dockerfile
     container_name: talkprep-gateway
     environment:
