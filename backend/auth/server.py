@@ -145,10 +145,24 @@ def run_migrations():
             """)
             cursor.execute("INSERT INTO schema_migrations (version, description) VALUES (1, 'Create base users table')")
 
+        # Guard Check: Dynamically recover missing columns on pre-existing database files
+        cursor.execute("PRAGMA table_info(users)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if "password_salt" not in columns:
+            logger.info("Database users table is missing password_salt column. Adding it...")
+            cursor.execute("ALTER TABLE users ADD COLUMN password_salt TEXT;")
+        if "password_hash" not in columns:
+            logger.info("Database users table is missing password_hash column. Adding it...")
+            cursor.execute("ALTER TABLE users ADD COLUMN password_hash TEXT;")
+        if "failed_login_attempts" not in columns:
+            logger.info("Database users table is missing failed_login_attempts column. Adding it...")
+            cursor.execute("ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER DEFAULT 0;")
+        if "locked_until" not in columns:
+            logger.info("Database users table is missing locked_until column. Adding it...")
+            cursor.execute("ALTER TABLE users ADD COLUMN locked_until TIMESTAMP NULL;")
+
         # Migration 2: Security Lockouts
         if current_version < 2:
-            cursor.execute("ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER DEFAULT 0;")
-            cursor.execute("ALTER TABLE users ADD COLUMN locked_until TIMESTAMP NULL;")
             cursor.execute("INSERT INTO schema_migrations (version, description) VALUES (2, 'Add security lockout columns')")
 
         # Migration 3: Audit Indexes
