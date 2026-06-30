@@ -15,19 +15,19 @@ const services = [
   {
     name: "AUTH-SERVICE",
     cmd: "python",
-    args: [path.join(__dirname, "../services/auth/server.py")],
+    args: [path.join(__dirname, "../backend/auth/server.py")],
     color: colors.yellow
   },
   {
     name: "AI-SERVICE",
     cmd: "python",
-    args: [path.join(__dirname, "../services/ai/server.py")],
+    args: [path.join(__dirname, "../backend/ai/server.py")],
     color: colors.cyan
   },
   {
     name: "BILLING-SERVICE",
     cmd: "python",
-    args: [path.join(__dirname, "../services/billing/server.py")],
+    args: [path.join(__dirname, "../backend/billing/server.py")],
     color: colors.green
   },
   {

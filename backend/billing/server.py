@@ -5,12 +5,14 @@ import requests
 import logging
 import time
 import contextvars
+import shutil
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from fastapi import FastAPI, HTTPException, Header, status, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, PlainTextResponse
 from pydantic import BaseModel
+from typing import Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 import io
@@ -24,7 +26,6 @@ class CorrelationFilter(logging.Filter):
         record.correlation_id = correlation_id_ctx.get()
         return True
 
-# Setup logging with correlation filter
 handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] [TraceID: %(correlation_id)s] (%(name)s) %(message)s"))
 handler.addFilter(CorrelationFilter())
@@ -34,11 +35,10 @@ logger = logging.getLogger("billing-service")
 
 app = FastAPI(
     title="TalkPrep Billing Service (Google Tech Grade)",
-    description="Secure checkouts and business metrics auditor with Dapper tracing.",
-    version="3.0.0"
+    description="Secure checkouts, promo code validators, and text invoice recorders.",
+    version="4.0.0"
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -103,7 +103,20 @@ def run_migrations():
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);")
             cursor.execute("INSERT INTO schema_migrations (version, description) VALUES (2, 'Add user and status indexes')")
 
-        logger.info(f"Billing database migrations applied. Current Schema Version: {max(current_version, 2)}")
+        # Migration 3: Coupon Code System
+        if current_version < 3:
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS coupons (
+                code TEXT PRIMARY KEY,
+                discount_percentage INTEGER,
+                is_active INTEGER DEFAULT 1
+            );
+            """)
+            cursor.execute("INSERT INTO coupons (code, discount_percentage, is_active) VALUES ('SAVE50', 50, 1);")
+            cursor.execute("INSERT INTO coupons (code, discount_percentage, is_active) VALUES ('FREEPASS', 100, 1);")
+            cursor.execute("INSERT INTO schema_migrations (version, description) VALUES (3, 'Add coupons support system')")
+
+        logger.info(f"Billing database migrations applied. Current Schema Version: {max(current_version, 3)}")
 
 run_migrations()
 
@@ -124,6 +137,34 @@ def get_http_session(retries=3, backoff_factor=0.3):
 
 http_client = get_http_session()
 
+# --- TELEMETRY HEALTH DIAGNOSTICS ---
+@app.get("/healthz")
+def health_check():
+    db_status = "healthy"
+    db_error = None
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT 1")
+    except Exception as e:
+        db_status = "unhealthy"
+        db_error = str(e)
+
+    total, used, free = shutil.disk_usage("/")
+    
+    return {
+        "status": "healthy" if db_status == "healthy" else "unhealthy",
+        "service": "billing-service",
+        "timestamp": datetime.now().isoformat(),
+        "database": {
+            "status": db_status,
+            "error": db_error
+        },
+        "system": {
+            "disk_free_gb": round(free / (2**30), 2),
+            "disk_used_percentage": round((used / total) * 100, 1)
+        }
+    }
+
 # --- TRACING MIDDLEWARE ---
 @app.middleware("http")
 async def trace_middleware(request: Request, call_next):
@@ -143,6 +184,7 @@ async def trace_middleware(request: Request, call_next):
 # --- VALIDATION SCHEMAS ---
 class CheckoutSchema(BaseModel):
     packType: str
+    couponCode: Optional[str] = ""
 
 class WebhookSchema(BaseModel):
     sessionId: str
@@ -151,7 +193,25 @@ class WebhookSchema(BaseModel):
 class SeedSchema(BaseModel):
     userId: str
 
+class ValidateCouponSchema(BaseModel):
+    couponCode: str
+
 # --- HTTP ROUTES ---
+
+@app.post("/api/billing/coupon/validate")
+def validate_coupon(data: ValidateCouponSchema):
+    code_clean = data.couponCode.upper().strip()
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT * FROM coupons WHERE code = ? AND is_active = 1", (code_clean,))
+        coupon = cursor.fetchone()
+        if not coupon:
+            raise HTTPException(status_code=400, detail="Invalid or inactive coupon code")
+            
+        return {
+            "success": True,
+            "code": coupon["code"],
+            "discountPercentage": coupon["discount_percentage"]
+        }
 
 @app.post("/api/billing/checkout")
 def initiate_checkout(data: CheckoutSchema, x_user_id: str = Header(None)):
@@ -161,21 +221,32 @@ def initiate_checkout(data: CheckoutSchema, x_user_id: str = Header(None)):
     if data.packType not in ["5_CREDITS", "PRO_MONTHLY"]:
         raise HTTPException(status_code=400, detail="Invalid package type")
 
-    amount = 15.0 if data.packType == "5_CREDITS" else 29.0
+    base_amount = 15.0 if data.packType == "5_CREDITS" else 29.0
     credits = 5 if data.packType == "5_CREDITS" else 9999
     type_val = "PACK" if data.packType == "5_CREDITS" else "SUBSCRIPTION"
 
+    discount_percentage = 0
+    if data.couponCode:
+        code_clean = data.couponCode.upper().strip()
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT discount_percentage FROM coupons WHERE code = ? AND is_active = 1", (code_clean,))
+            coupon = cursor.fetchone()
+            if coupon:
+                discount_percentage = coupon["discount_percentage"]
+                logger.info(f"Applied coupon {code_clean} ({discount_percentage}%) to checkout.")
+
+    discounted_amount = base_amount * (1 - (discount_percentage / 100))
     session_id = str(uuid.uuid4())
     
     with get_db_cursor() as cursor:
         cursor.execute(
             "INSERT INTO transactions (id, user_id, amount, credits, type, status) VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, x_user_id, amount, credits, type_val, "PENDING")
+            (session_id, x_user_id, discounted_amount, credits, type_val, "PENDING")
         )
 
     checkout_url = f"/checkout?sessionId={session_id}"
-    logger.info(f"Checkout generated: {session_id} for user {x_user_id}")
-    return {"success": True, "checkoutUrl": checkout_url}
+    logger.info(f"Checkout generated: {session_id} for user {x_user_id} with amount ${discounted_amount:.2f}")
+    return {"success": True, "checkoutUrl": checkout_url, "amount": discounted_amount}
 
 @app.post("/api/billing/webhook")
 def confirm_payment(data: WebhookSchema, x_user_id: str = Header(None)):
@@ -196,7 +267,6 @@ def confirm_payment(data: WebhookSchema, x_user_id: str = Header(None)):
             raise HTTPException(status_code=400, detail="Transaction already processed")
 
         if data.status == "SUCCESS":
-            # Forward correlation ID downstream to Auth service
             try:
                 upgrade_res = http_client.post(
                     f"{AUTH_SERVICE_URL}/api/internal/users/{tx['user_id']}/upgrade",
@@ -252,6 +322,42 @@ def get_transaction(tx_id: str, x_user_id: str = Header(None)):
 
         return {"success": True, "transaction": dict(tx)}
 
+# --- GENERATE INVOICE PDF/TXT RECORDER ---
+@app.get("/api/billing/transaction/{tx_id}/invoice")
+def generate_invoice_txt(tx_id: str, x_user_id: str = Header(None)):
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT * FROM transactions WHERE id = ?", (tx_id,))
+        tx = cursor.fetchone()
+        if not tx:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        if tx["user_id"] != x_user_id:
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+        invoice_content = f"""
+==================================================
+                 TALKPREP AI CORP
+            TECHNICAL INTERVIEW PRACTICE
+==================================================
+INVOICE ID:   {tx['id']}
+DATE:         {tx['created_at']}
+CLIENT ID:    {tx['user_id']}
+STATUS:       {tx['status']}
+--------------------------------------------------
+DESCRIPTION                      QTY       AMOUNT
+--------------------------------------------------
+Practice Bundle ({tx['type']})          1        ${tx['amount']:.2f}
+Tokens added: {tx['credits']} credits
+--------------------------------------------------
+TOTAL DUE:                               ${tx['amount']:.2f}
+==================================================
+           THANK YOU FOR PREPARING WITH US!
+==================================================
+"""
+        return PlainTextResponse(content=invoice_content.strip())
+
 @app.post("/api/internal/dev/seed")
 def seed_billing(data: SeedSchema):
     with get_db_cursor() as cursor:
@@ -262,7 +368,6 @@ def seed_billing(data: SeedSchema):
         two_days_ago = (now - timedelta(days=2)).isoformat()
         one_day_ago = (now - timedelta(days=1)).isoformat()
 
-        # Seed mock payment logs
         cursor.execute(
             "INSERT INTO transactions (id, user_id, amount, credits, type, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (str(uuid.uuid4()), data.userId, 0.0, 1, "FREE", "SUCCESS", three_days_ago)

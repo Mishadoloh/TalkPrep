@@ -13,9 +13,13 @@ import {
   Percent, 
   Loader2, 
   Search, 
-  Settings, 
   Database,
-  ArrowLeft
+  ArrowLeft,
+  Download,
+  Unlock,
+  CheckCircle2,
+  AlertTriangle,
+  Server
 } from "lucide-react";
 
 export default function AdminPanel() {
@@ -31,13 +35,21 @@ export default function AdminPanel() {
   const [loading, setLoading] = useState(false);
   const [activeSubTab, setActiveSubTab] = useState<"metrics" | "users" | "transactions">("metrics");
   
+  // Service health checks
+  const [healthStatus, setHealthStatus] = useState<any>({
+    auth: { status: "unknown", db: "unknown", disk: "0" },
+    ai: { status: "unknown", db: "unknown", disk: "0" },
+    billing: { status: "unknown", db: "unknown", disk: "0" }
+  });
+
   // Search states
   const [userQuery, setUserQuery] = useState("");
   const [txQuery, setTxQuery] = useState("");
 
-  // Seeding feedbacks
+  // Feedbacks
   const [seeding, setSeeding] = useState(false);
   const [seedingSuccess, setSeedingSuccess] = useState("");
+  const [actionSuccess, setActionSuccess] = useState("");
 
   useEffect(() => {
     const saved = localStorage.getItem("talkprep_locale") as Locale;
@@ -84,10 +96,46 @@ export default function AdminPanel() {
       if (mData.success) setMetrics(mData.metrics);
       if (uData.success) setUsers(uData.users);
       if (tData.success) setTransactions(tData.transactions);
+      
+      // Perform health check probes
+      probeServiceHealth();
     } catch (e) {
       console.error("Failed to load admin logs:", e);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const probeServiceHealth = async () => {
+    const defaultVal = { status: "offline", db: "offline", disk: "N/A" };
+    try {
+      const authHealth = await fetch("http://localhost:3010/healthz").then(r => r.json()).catch(() => defaultVal);
+      const aiHealth = await fetch("http://localhost:3020/healthz").then(r => r.json()).catch(() => defaultVal);
+      const billingHealth = await fetch("http://localhost:3030/healthz").then(r => r.json()).catch(() => defaultVal);
+
+      setHealthStatus({
+        auth: { status: authHealth.status || "offline", db: authHealth.database?.status || "offline", disk: authHealth.system?.disk_free_gb || "N/A" },
+        ai: { status: aiHealth.status || "offline", db: aiHealth.database?.status || "offline", disk: aiHealth.system?.disk_free_gb || "N/A" },
+        billing: { status: billingHealth.status || "offline", db: billingHealth.database?.status || "offline", disk: billingHealth.system?.disk_free_gb || "N/A" }
+      });
+    } catch (err) {
+      console.error("Health probe failure:", err);
+    }
+  };
+
+  const handleUnlockUser = async (userId: string) => {
+    setActionSuccess("");
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/unlock`, { method: "POST" });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setActionSuccess(locale === "uk-UA" ? `Акаунт ${userId.slice(0,6)}... успішно розблоковано!` : `Account ${userId.slice(0,6)}... successfully unlocked!`);
+        loadAdminData();
+      } else {
+        alert(data.error || "Unlock failed");
+      }
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -108,6 +156,25 @@ export default function AdminPanel() {
     }
   };
 
+  const downloadCSVReport = (dataList: any[], reportName: string) => {
+    if (dataList.length === 0) {
+      alert("No data available to export.");
+      return;
+    }
+    const headers = Object.keys(dataList[0]).join(",");
+    const rows = dataList.map(row => 
+      Object.values(row).map(value => `"${String(value).replace(/"/g, '""')}"`).join(",")
+    );
+    const csvContent = "data:text/csv;charset=utf-8," + [headers, ...rows].join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `${reportName}_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   // Filter lists based on queries
   const filteredUsers = users.filter(u => 
     u.email.toLowerCase().includes(userQuery.toLowerCase()) || 
@@ -120,6 +187,11 @@ export default function AdminPanel() {
     t.userId.includes(txQuery) ||
     t.type.toLowerCase().includes(txQuery.toLowerCase())
   );
+
+  // Group metrics for visual chart
+  const subscriptionSales = transactions.filter(t => t.type === "SUBSCRIPTION" && t.status === "SUCCESS").reduce((acc, curr) => acc + curr.amount, 0);
+  const packSales = transactions.filter(t => t.type === "PACK" && t.status === "SUCCESS").reduce((acc, curr) => acc + curr.amount, 0);
+  const maxSales = Math.max(subscriptionSales, packSales, 100);
 
   if (!isUnlocked) {
     return (
@@ -187,20 +259,28 @@ export default function AdminPanel() {
             </h1>
           </div>
           
-          <button 
-            onClick={handleDevSeed} 
-            className="btn btn-secondary" 
-            style={{ padding: "10px 16px", fontSize: "0.85rem" }}
-            disabled={seeding}
-          >
-            <Database size={14} />
-            {seeding ? "Seeding..." : (locale === "uk-UA" ? "Посіяти тестові дані" : "Seed Test Data")}
-          </button>
+          <div style={{ display: "flex", gap: "10px" }}>
+            <button 
+              onClick={handleDevSeed} 
+              className="btn btn-secondary" 
+              style={{ padding: "10px 16px", fontSize: "0.85rem" }}
+              disabled={seeding}
+            >
+              <Database size={14} />
+              {seeding ? "Seeding..." : (locale === "uk-UA" ? "Посіяти тестові дані" : "Seed Test Data")}
+            </button>
+          </div>
         </div>
 
         {seedingSuccess && (
           <div className="glass-card" style={{ padding: "16px", border: "1px solid var(--color-success)", color: "var(--color-success)", marginBottom: "30px", fontSize: "0.9rem" }}>
             {seedingSuccess}
+          </div>
+        )}
+
+        {actionSuccess && (
+          <div className="glass-card" style={{ padding: "16px", border: "1px solid var(--color-secondary)", color: "var(--color-secondary)", marginBottom: "30px", fontSize: "0.9rem" }}>
+            {actionSuccess}
           </div>
         )}
 
@@ -300,41 +380,125 @@ export default function AdminPanel() {
           <>
             {/* SUB-TAB 1: SYSTEM OVERVIEW */}
             {activeSubTab === "metrics" && (
-              <div className="glass-card" style={{ padding: "40px" }}>
-                <h3 style={{ fontSize: "1.4rem", marginBottom: "16px" }}>
-                  {locale === "uk-UA" ? "Архітектурний статус мікросервісів" : "Architectural Status Overview"}
-                </h3>
-                <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border-color)", paddingBottom: "12px" }}>
-                    <strong>Auth & User Service</strong>
-                    <span className="badge badge-pro" style={{ background: "var(--color-success)", color: "#000" }}>ONLINE (3010)</span>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: "30px" }}>
+                
+                {/* Visual Chart CSS Block */}
+                <div className="glass-card" style={{ padding: "30px" }}>
+                  <h3 style={{ fontSize: "1.2rem", marginBottom: "20px" }}>
+                    {locale === "uk-UA" ? "Розподіл фінансових продажів" : "Financial Sales Distribution"}
+                  </h3>
+                  
+                  <div style={{ display: "flex", justifyContent: "space-around", alignItems: "flex-end", height: "200px", paddingBottom: "10px", borderBottom: "1px solid var(--border-color)", marginBottom: "20px" }}>
+                    
+                    {/* Bar 1: Packs */}
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "80px" }}>
+                      <span style={{ fontSize: "0.8rem", color: "var(--color-text-secondary)", marginBottom: "6px" }}>${packSales}</span>
+                      <div 
+                        style={{ 
+                          width: "36px", 
+                          height: `${(packSales / maxSales) * 150}px`, 
+                          background: "linear-gradient(to top, var(--color-primary), var(--color-secondary))", 
+                          borderRadius: "4px 4px 0 0",
+                          boxShadow: "0 0 10px rgba(0, 229, 255, 0.3)"
+                        }}
+                      />
+                      <span style={{ fontSize: "0.85rem", marginTop: "8px", fontWeight: "bold" }}>Packs</span>
+                    </div>
+
+                    {/* Bar 2: Subscriptions */}
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "80px" }}>
+                      <span style={{ fontSize: "0.8rem", color: "var(--color-text-secondary)", marginBottom: "6px" }}>${subscriptionSales}</span>
+                      <div 
+                        style={{ 
+                          width: "36px", 
+                          height: `${(subscriptionSales / maxSales) * 150}px`, 
+                          background: "linear-gradient(to top, #4cfa7a, #00e5ff)", 
+                          borderRadius: "4px 4px 0 0",
+                          boxShadow: "0 0 10px rgba(76, 250, 122, 0.3)"
+                        }}
+                      />
+                      <span style={{ fontSize: "0.85rem", marginTop: "8px", fontWeight: "bold" }}>Pro Sub</span>
+                    </div>
+
                   </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border-color)", paddingBottom: "12px" }}>
-                    <strong>AI & Grading Core</strong>
-                    <span className="badge badge-pro" style={{ background: "var(--color-success)", color: "#000" }}>ONLINE (3020)</span>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <strong>Billing & Stripe Webhook Service</strong>
-                    <span className="badge badge-pro" style={{ background: "var(--color-success)", color: "#000" }}>ONLINE (3030)</span>
+                  
+                  <p style={{ fontSize: "0.85rem", color: "var(--color-text-secondary)", lineHeight: "1.4" }}>
+                    {locale === "uk-UA" 
+                      ? "Співвідношення одноразових пакетів токенів та довгострокових Pro підписок на сервісі." 
+                      : "Ratio of single-purchase token packs to monthly Pro recurring subscriptions."}
+                  </p>
+                </div>
+
+                {/* Service Health Probe Stats */}
+                <div className="glass-card" style={{ padding: "30px" }}>
+                  <h3 style={{ fontSize: "1.2rem", marginBottom: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
+                    <Server size={18} style={{ color: "var(--color-secondary)" }} />
+                    {locale === "uk-UA" ? "Діагностика хмари" : "Cloud Diagnostic Metrics"}
+                  </h3>
+                  
+                  <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                    
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.06)", paddingBottom: "10px" }}>
+                      <div>
+                        <strong>Auth Service</strong>
+                        <div style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>Disk Free: {healthStatus.auth.disk} GB</div>
+                      </div>
+                      <span className="badge" style={{ background: healthStatus.auth.status === "healthy" ? "rgba(76,175,80,0.15)" : "rgba(255,82,82,0.15)", color: healthStatus.auth.status === "healthy" ? "var(--color-success)" : "var(--color-error)" }}>
+                        {healthStatus.auth.status.toUpperCase()}
+                      </span>
+                    </div>
+
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.06)", paddingBottom: "10px" }}>
+                      <div>
+                        <strong>AI Service</strong>
+                        <div style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>Disk Free: {healthStatus.ai.disk} GB</div>
+                      </div>
+                      <span className="badge" style={{ background: healthStatus.ai.status === "healthy" ? "rgba(76,175,80,0.15)" : "rgba(255,82,82,0.15)", color: healthStatus.ai.status === "healthy" ? "var(--color-success)" : "var(--color-error)" }}>
+                        {healthStatus.ai.status.toUpperCase()}
+                      </span>
+                    </div>
+
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div>
+                        <strong>Billing Service</strong>
+                        <div style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>Disk Free: {healthStatus.billing.disk} GB</div>
+                      </div>
+                      <span className="badge" style={{ background: healthStatus.billing.status === "healthy" ? "rgba(76,175,80,0.15)" : "rgba(255,82,82,0.15)", color: healthStatus.billing.status === "healthy" ? "var(--color-success)" : "var(--color-error)" }}>
+                        {healthStatus.billing.status.toUpperCase()}
+                      </span>
+                    </div>
+
                   </div>
                 </div>
+
               </div>
             )}
 
             {/* SUB-TAB 2: USERS DIRECTORY */}
             {activeSubTab === "users" && (
               <div>
-                {/* Search Bar */}
-                <div style={{ display: "flex", alignItems: "center", gap: "10px", background: "rgba(0,0,0,0.2)", border: "1px solid var(--border-color)", padding: "12px 16px", borderRadius: "var(--radius-sm)", marginBottom: "20px" }}>
-                  <Search size={16} style={{ color: "var(--color-text-muted)" }} />
-                  <input
-                    type="text"
-                    className="form-input"
-                    style={{ border: "none", padding: 0, margin: 0, background: "transparent" }}
-                    placeholder={locale === "uk-UA" ? "Пошук за поштою, ім'ям або ID..." : "Search by email, name or ID..."}
-                    value={userQuery}
-                    onChange={(e) => setUserQuery(e.target.value)}
-                  />
+                <div style={{ display: "flex", gap: "10px", marginBottom: "20px" }}>
+                  {/* Search Bar */}
+                  <div style={{ flex: 1, display: "flex", alignItems: "center", gap: "10px", background: "rgba(0,0,0,0.2)", border: "1px solid var(--border-color)", padding: "12px 16px", borderRadius: "var(--radius-sm)" }}>
+                    <Search size={16} style={{ color: "var(--color-text-muted)" }} />
+                    <input
+                      type="text"
+                      className="form-input"
+                      style={{ border: "none", padding: 0, margin: 0, background: "transparent" }}
+                      placeholder={locale === "uk-UA" ? "Пошук за поштою, ім'ям або ID..." : "Search by email, name or ID..."}
+                      value={userQuery}
+                      onChange={(e) => setUserQuery(e.target.value)}
+                    />
+                  </div>
+
+                  <button 
+                    onClick={() => downloadCSVReport(users, "talkprep_users")} 
+                    className="btn btn-secondary" 
+                    style={{ padding: "0 16px", display: "flex", alignItems: "center", gap: "6px" }}
+                  >
+                    <Download size={14} />
+                    CSV
+                  </button>
                 </div>
 
                 <div className="glass-card" style={{ padding: "20px", overflowX: "auto" }}>
@@ -346,6 +510,7 @@ export default function AdminPanel() {
                         <th style={{ padding: "12px" }}>Email</th>
                         <th style={{ padding: "12px" }}>Plan</th>
                         <th style={{ padding: "12px" }}>Credits</th>
+                        <th style={{ padding: "12px" }}>Lockout reset</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -362,6 +527,17 @@ export default function AdminPanel() {
                             )}
                           </td>
                           <td style={{ padding: "12px", fontFamily: "var(--font-mono)" }}>{u.credits}</td>
+                          <td style={{ padding: "12px" }}>
+                            <button
+                              onClick={() => handleUnlockUser(u.id)}
+                              className="btn btn-secondary"
+                              style={{ padding: "4px 8px", fontSize: "0.75rem", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                              title="Unlock account login lockouts"
+                            >
+                              <Unlock size={10} />
+                              {locale === "uk-UA" ? "Скинути" : "Reset Lock"}
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -373,17 +549,28 @@ export default function AdminPanel() {
             {/* SUB-TAB 3: TRANSACTION LOGS */}
             {activeSubTab === "transactions" && (
               <div>
-                {/* Search Bar */}
-                <div style={{ display: "flex", alignItems: "center", gap: "10px", background: "rgba(0,0,0,0.2)", border: "1px solid var(--border-color)", padding: "12px 16px", borderRadius: "var(--radius-sm)", marginBottom: "20px" }}>
-                  <Search size={16} style={{ color: "var(--color-text-muted)" }} />
-                  <input
-                    type="text"
-                    className="form-input"
-                    style={{ border: "none", padding: 0, margin: 0, background: "transparent" }}
-                    placeholder={locale === "uk-UA" ? "Пошук за ID сесії чи типом..." : "Search by session ID or type..."}
-                    value={txQuery}
-                    onChange={(e) => setTxQuery(e.target.value)}
-                  />
+                <div style={{ display: "flex", gap: "10px", marginBottom: "20px" }}>
+                  {/* Search Bar */}
+                  <div style={{ flex: 1, display: "flex", alignItems: "center", gap: "10px", background: "rgba(0,0,0,0.2)", border: "1px solid var(--border-color)", padding: "12px 16px", borderRadius: "var(--radius-sm)" }}>
+                    <Search size={16} style={{ color: "var(--color-text-muted)" }} />
+                    <input
+                      type="text"
+                      className="form-input"
+                      style={{ border: "none", padding: 0, margin: 0, background: "transparent" }}
+                      placeholder={locale === "uk-UA" ? "Пошук за ID сесії чи типом..." : "Search by session ID or type..."}
+                      value={txQuery}
+                      onChange={(e) => setTxQuery(e.target.value)}
+                    />
+                  </div>
+
+                  <button 
+                    onClick={() => downloadCSVReport(transactions, "talkprep_transactions")} 
+                    className="btn btn-secondary" 
+                    style={{ padding: "0 16px", display: "flex", alignItems: "center", gap: "6px" }}
+                  >
+                    <Download size={14} />
+                    CSV
+                  </button>
                 </div>
 
                 <div className="glass-card" style={{ padding: "20px", overflowX: "auto" }}>

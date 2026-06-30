@@ -33,38 +33,38 @@ services:
 
   auth-service:
     build:
-      context: ./services/auth
+      context: ./backend/auth
       dockerfile: Dockerfile
     container_name: talkprep-auth-service
     volumes:
-      - ./services/auth:/app
+      - ./backend/auth:/app
     networks:
       - talkprep-network
     restart: always
 
   ai-service:
     build:
-      context: ./services/ai
+      context: ./backend/ai
       dockerfile: Dockerfile
     container_name: talkprep-ai-service
     environment:
       - AUTH_SERVICE_URL=http://auth-service:3010
       - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
-      - ./services/ai:/app
+      - ./backend/ai:/app
     networks:
       - talkprep-network
     restart: always
 
   billing-service:
     build:
-      context: ./services/billing
+      context: ./backend/billing
       dockerfile: Dockerfile
     container_name: talkprep-billing-service
     environment:
       - AUTH_SERVICE_URL=http://auth-service:3010
     volumes:
-      - ./services/billing:/app
+      - ./backend/billing:/app
     networks:
       - talkprep-network
     restart: always

@@ -16,6 +16,7 @@ import io
 import csv
 import re
 import threading
+import shutil
 from collections import defaultdict
 
 # --- DISTRIBUTED TRACING (GOOGLE DAPPER PATTERN) ---
@@ -26,7 +27,6 @@ class CorrelationFilter(logging.Filter):
         record.correlation_id = correlation_id_ctx.get()
         return True
 
-# Setup logging with correlation filter
 handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] [TraceID: %(correlation_id)s] (%(name)s) %(message)s"))
 handler.addFilter(CorrelationFilter())
@@ -36,11 +36,10 @@ logger = logging.getLogger("auth-service")
 
 app = FastAPI(
     title="TalkPrep Auth Service (Google Tech Grade)",
-    description="Auth microservice with Dapper distributed tracing and Token Bucket rate limiting.",
-    version="3.0.0"
+    description="Auth microservice with Dapper distributed tracing, Token Bucket rate limiting, and IP Blacklisting.",
+    version="4.0.0"
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -53,33 +52,50 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "users.db")
 MAX_LOGIN_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
 
-# --- GOOGLE-STYLE TOKEN BUCKET RATE LIMITER ---
-class TokenBucketLimiter:
-    def __init__(self, capacity: int, refill_rate: float):
+# --- GOOGLE-STYLE TOKEN BUCKET RATE LIMITER with IP BANNING ---
+class TokenBucketLimiterWithIPBanning:
+    def __init__(self, capacity: int, refill_rate: float, ban_duration_minutes: int = 30):
         self.capacity = capacity
-        self.refill_rate = refill_rate  # Tokens refilled per second
+        self.refill_rate = refill_rate
+        self.ban_duration = ban_duration_minutes
         self.buckets = defaultdict(lambda: (capacity, time.time()))
+        self.violation_counts = defaultdict(int)
+        self.banned_until = {}
         self.lock = threading.Lock()
 
-    def allow_request(self, key: str) -> bool:
+    def is_ip_banned(self, ip: str) -> bool:
+        now = time.time()
+        if ip in self.banned_until:
+            if now < self.banned_until[ip]:
+                return True
+            else:
+                del self.banned_until[ip]
+                self.violation_counts[ip] = 0
+        return False
+
+    def allow_request(self, ip: str) -> bool:
         with self.lock:
-            tokens, last_refill = self.buckets[key]
+            if self.is_ip_banned(ip):
+                return False
+
+            tokens, last_refill = self.buckets[ip]
             now = time.time()
-            
-            # Calculate refilled tokens based on elapsed time
             elapsed = now - last_refill
             refilled = elapsed * self.refill_rate
             tokens = min(self.capacity, tokens + refilled)
             
             if tokens >= 1:
-                self.buckets[key] = (tokens - 1, now)
+                self.buckets[ip] = (tokens - 1, now)
                 return True
             else:
-                self.buckets[key] = (tokens, now)
+                self.buckets[ip] = (tokens, now)
+                self.violation_counts[ip] += 1
+                if self.violation_counts[ip] >= 3:
+                    self.banned_until[ip] = now + (self.ban_duration * 60)
+                    logger.warning(f"IP {ip} temporarily banned for {self.ban_duration} minutes due to rate limit abuse.")
                 return False
 
-# Limit to 5 requests per 10 seconds (capacity 5, refills 0.5 per sec)
-rate_limiter = TokenBucketLimiter(capacity=5, refill_rate=0.5)
+rate_limiter = TokenBucketLimiterWithIPBanning(capacity=5, refill_rate=0.5, ban_duration_minutes=30)
 
 # --- DATABASE MIGRATIONS ENGINE ---
 @contextmanager
@@ -144,15 +160,24 @@ def run_migrations():
 
 run_migrations()
 
-# --- TRACING MIDDLEWARE & RATE LIMITING MIDDLEWARE ---
+# --- TRACING & SECURITY MIDDLEWARE ---
 @app.middleware("http")
 async def google_tech_middleware(request: Request, call_next):
-    # 1. Tracing
     corr_id = request.headers.get("x-correlation-id", str(uuid.uuid4()))
     token = correlation_id_ctx.set(corr_id)
     
-    # 2. Rate Limiting (Token Bucket)
     client_ip = request.client.host if request.client else "unknown"
+    
+    # Check IP Ban first
+    if rate_limiter.is_ip_banned(client_ip):
+        logger.warning(f"Blocked request from banned IP: {client_ip}")
+        correlation_id_ctx.reset(token)
+        return JSONResponse(
+            status_code=403,
+            content={"success": False, "error": "Your IP has been temporarily blacklisted due to rate limit abuse."}
+        )
+
+    # Token Bucket Rate Limiting
     if request.url.path in ["/api/auth/login", "/api/auth/register"]:
         if not rate_limiter.allow_request(client_ip):
             logger.warning(f"Rate limit exceeded for IP {client_ip} on path {request.url.path}")
@@ -176,7 +201,7 @@ async def google_tech_middleware(request: Request, call_next):
 class RegisterSchema(BaseModel):
     email: EmailStr
     username: str = Field(..., min_length=2, max_length=50)
-    password: str = Field(..., min_length=6)
+    password: str = Field(..., min_length=8)
 
     @validator("password")
     def validate_password_strength(cls, v):
@@ -184,6 +209,10 @@ class RegisterSchema(BaseModel):
             raise ValueError("Password must contain at least one digit.")
         if not any(c.isupper() for c in v):
             raise ValueError("Password must contain at least one uppercase letter.")
+        if not any(c.islower() for c in v):
+            raise ValueError("Password must contain at least one lowercase letter.")
+        if not any(c in "!@#$%^&*()-_=+[]{}|;:',.<>?/~`" for c in v):
+            raise ValueError("Password must contain at least one special character.")
         return v
 
     @validator("username")
@@ -212,6 +241,34 @@ def verify_password(password: str, salt_hex: str, hash_hex: str) -> bool:
     computed_hash, _ = hash_password(password, salt)
     return computed_hash == hash_hex
 
+# --- TELEMETRY HEALTH DIAGNOSTICS ---
+@app.get("/healthz")
+def health_check():
+    db_status = "healthy"
+    db_error = None
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT 1")
+    except Exception as e:
+        db_status = "unhealthy"
+        db_error = str(e)
+
+    total, used, free = shutil.disk_usage("/")
+    
+    return {
+        "status": "healthy" if db_status == "healthy" else "unhealthy",
+        "service": "auth-service",
+        "timestamp": datetime.now().isoformat(),
+        "database": {
+            "status": db_status,
+            "error": db_error
+        },
+        "system": {
+            "disk_free_gb": round(free / (2**30), 2),
+            "disk_used_percentage": round((used / total) * 100, 1)
+        }
+    }
+
 # --- HTTP ROUTES ---
 
 @app.post("/api/auth/register")
@@ -223,7 +280,7 @@ def register(data: RegisterSchema):
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="Email is already registered")
 
-        user_id = str(hashlib.md5(email_clean.encode()).hexdigest()) + f"-{os.urandom(4).hex()}"
+        user_id = str(uuid.uuid4())
         pwd_hash, pwd_salt = hash_password(data.password)
 
         cursor.execute(
@@ -326,6 +383,18 @@ def get_user_profile(user_id: str):
                 "credits": user["credits"]
             }
         }
+
+@app.post("/api/internal/users/{user_id}/unlock")
+def unlock_user(user_id: str):
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        cursor.execute("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = ?", (user_id,))
+        logger.info(f"Administratively unlocked account for user: {user_id}")
+        return {"success": True, "message": "Account unlocked successfully"}
 
 @app.post("/api/internal/users/{user_id}/deduct-credit")
 def deduct_credit(user_id: str):

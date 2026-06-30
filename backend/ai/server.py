@@ -8,6 +8,8 @@ import re
 import queue
 import threading
 import contextvars
+import json
+import shutil
 from datetime import datetime
 from contextlib import contextmanager
 from fastapi import FastAPI, HTTPException, Header, status, Request
@@ -26,7 +28,6 @@ class CorrelationFilter(logging.Filter):
         record.correlation_id = correlation_id_ctx.get()
         return True
 
-# Setup logging with correlation filter
 handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] [TraceID: %(correlation_id)s] (%(name)s) %(message)s"))
 handler.addFilter(CorrelationFilter())
@@ -36,11 +37,10 @@ logger = logging.getLogger("ai-service")
 
 app = FastAPI(
     title="TalkPrep AI Service (Google Tech Grade)",
-    description="Speech analytics with background task queues and Dapper tracing.",
-    version="3.0.0"
+    description="Speech analytics with background task queues, custom resumes, and Dapper tracing.",
+    version="4.0.0"
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -160,6 +160,37 @@ def get_http_session(retries=3, backoff_factor=0.3):
 
 http_client = get_http_session()
 
+# --- TELEMETRY HEALTH DIAGNOSTICS ---
+@app.get("/healthz")
+def health_check():
+    db_status = "healthy"
+    db_error = None
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT 1")
+    except Exception as e:
+        db_status = "unhealthy"
+        db_error = str(e)
+
+    total, used, free = shutil.disk_usage("/")
+    
+    return {
+        "status": "healthy" if db_status == "healthy" else "unhealthy",
+        "service": "ai-service",
+        "timestamp": datetime.now().isoformat(),
+        "database": {
+            "status": db_status,
+            "error": db_error
+        },
+        "background_queue": {
+            "size": grading_queue.qsize()
+        },
+        "system": {
+            "disk_free_gb": round(free / (2**30), 2),
+            "disk_used_percentage": round((used / total) * 100, 1)
+        }
+    }
+
 # --- ASYNCHRONOUS TASK WORKER QUEUE ---
 grading_queue = queue.Queue()
 
@@ -175,6 +206,22 @@ def estimate_speaking_rate(text: str, duration_seconds: float = 30.0) -> float:
     if duration_seconds <= 0:
         return 0.0
     return round((len(words) / duration_seconds) * 60, 1)
+
+def run_grammar_critique(answer: str, lang: str) -> str:
+    """Check for basic syntax/grammar styles based on simple rules."""
+    feedback = []
+    if lang == "en-US":
+        if re.search(r"\bi is\b|\bi are\b|\byou is\b|\bthey is\b|\bhe do\b", answer, re.I):
+            feedback.append("Grammatical agreement error detected.")
+        if len(answer.split()) > 25 and not any(mark in answer for mark in [".", ",", ";"]):
+            feedback.append("Avoid long run-on sentences without pauses.")
+    else:
+        if re.search(r"\bя є\b|\bвони є\b|\bвін робить\b", answer, re.I):
+            feedback.append("Зверніть увагу на узгодження відмінків.")
+        if len(answer.split()) > 20 and not any(mark in answer for mark in [".", ",", ";"]):
+            feedback.append("Речення занадто довге, структуруйте відповідь паузами.")
+            
+    return " ".join(feedback) if feedback else ("Good sentence structure." if lang == "en-US" else "Хороша структура речення.")
 
 def calculate_advanced_metrics(answer: str, reference: str, lang: str) -> dict:
     if not answer or len(answer.strip()) < 5:
@@ -194,6 +241,7 @@ def calculate_advanced_metrics(answer: str, reference: str, lang: str) -> dict:
 
     lexical_div = calculate_lexical_diversity(answer)
     wpm = estimate_speaking_rate(answer, duration_seconds=25.0)
+    grammar_notes = run_grammar_critique(answer, lang)
 
     ref_words = set(re.findall(r"\w+", reference.lower()))
     ans_words = set(re.findall(r"\w+", answer.lower()))
@@ -210,12 +258,12 @@ def calculate_advanced_metrics(answer: str, reference: str, lang: str) -> dict:
         f"Conceptual match is {int(match_ratio*100)}%. "
         f"Vocabulary diversity is {int(lexical_div*100)}%. "
         f"Detected {filler_count} verbal filler sounds. "
-        f"Estimated speaking pace: {wpm} WPM."
+        f"Estimated speaking pace: {wpm} WPM. {grammar_notes}"
     ) if lang == "en-US" else (
         f"Концептуальний збіг: {int(match_ratio*100)}%. "
         f"Різноманітність словникового запасу: {int(lexical_div*100)}%. "
         f"Виявлено {filler_count} слів-паразитів. "
-        f"Орієнтовний темп мовлення: {wpm} слів/хв."
+        f"Орієнтовний темп мовлення: {wpm} слів/хв. {grammar_notes}"
     )
     
     return {
@@ -254,7 +302,6 @@ def query_gemini_api(question: str, answer: str, ideal: str, lang: str) -> dict:
             json_data = res.json()
             raw_text = json_data["candidates"][0]["content"]["parts"][0]["text"].strip()
             clean_json = re.sub(r"```json|```", "", raw_text).strip()
-            import json
             parsed = json.loads(clean_json)
             metrics["score"] = int(parsed.get("score", metrics["score"]))
             metrics["critique"] = f"{parsed.get('critique', '')} ({metrics['critique']})"
@@ -263,7 +310,6 @@ def query_gemini_api(question: str, answer: str, ideal: str, lang: str) -> dict:
     return metrics
 
 def bg_task_worker():
-    """Background worker thread that processes grading tasks asynchronously."""
     while True:
         task = grading_queue.get()
         if task is None:
@@ -276,7 +322,6 @@ def bg_task_worker():
         lang = task["language"]
         corr_id = task["correlation_id"]
         
-        # Set tracing context variable inside the background worker thread
         token = correlation_id_ctx.set(corr_id)
         logger.info(f"Processing background grading task for question {question_id}")
         
@@ -306,7 +351,6 @@ def bg_task_worker():
             correlation_id_ctx.reset(token)
             grading_queue.task_done()
 
-# Start background worker daemon thread
 worker_thread = threading.Thread(target=bg_task_worker, daemon=True)
 worker_thread.start()
 
@@ -326,7 +370,7 @@ async def trace_middleware(request: Request, call_next):
     finally:
         correlation_id_ctx.reset(token)
 
-# --- QUESTION BANK ---
+# --- DEFAULT QUESTION BANK ---
 MOCK_BANK = {
     "Frontend Engineer": [
         {"q": "What is the difference between Virtual DOM and Real DOM in React?", "ideal": "Virtual DOM is a lightweight representation of the Real DOM. React diffs it to batch updates efficiently."},
@@ -339,11 +383,49 @@ MOCK_BANK = {
     ]
 }
 
+# --- DYNAMIC GEMINI QUESTIONS GENERATOR ---
+def generate_questions_from_resume_jd(resume: str, jd: str, role: str, level: str, lang: str) -> list[dict]:
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        logger.warning("No Gemini Key available for personalized interview. Falling back to default bank.")
+        return MOCK_BANK.get(role, MOCK_BANK["Frontend Engineer"])
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    prompt = f"""
+    You are an expert technical recruiter preparing questions for a technical interview.
+    Language: {lang}
+    Target Role: {role}
+    Experience Level: {level}
+    Candidate Resume Details: "{resume}"
+    Target Job Description (JD): "{jd}"
+
+    Generate exactly 3 highly technical mock interview questions tailored directly to this candidate's background and this role.
+    Provide the output in a strict JSON array containing exactly 3 objects with keys "q" (the question string) and "ideal" (a 1-2 sentence reference answer key containing technical keywords to check for).
+    Do not wrap in markdown block formatting.
+    """
+
+    try:
+        res = http_client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=10)
+        if res.status_code == 200:
+            json_data = res.json()
+            raw_text = json_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            clean_json = re.sub(r"```json|```", "", raw_text).strip()
+            parsed = json.loads(clean_json)
+            if isinstance(parsed, list) and len(parsed) == 3:
+                logger.info("Successfully generated 3 customized questions using Google Gemini.")
+                return parsed
+    except Exception as e:
+        logger.warning(f"Error generating dynamic questions via Gemini: {e}. Falling back to default bank.")
+
+    return MOCK_BANK.get(role, MOCK_BANK["Frontend Engineer"])
+
 # --- CONTROLLERS ---
 class StartInterviewSchema(BaseModel):
     role: str
     level: str
     language: str
+    resumeText: Optional[str] = ""
+    jobDescriptionText: Optional[str] = ""
 
 class AnswerSchema(BaseModel):
     questionId: str
@@ -365,7 +447,15 @@ def start_interview(data: StartInterviewSchema, x_user_id: str = Header(None)):
     except requests.exceptions.RequestException:
         raise HTTPException(status_code=502, detail="Auth service unreachable")
 
-    role_questions = MOCK_BANK.get(data.role, MOCK_BANK["Frontend Engineer"])
+    # Generate questions dynamically if resume or JD is present
+    if data.resumeText or data.jobDescriptionText:
+        logger.info(f"Generating custom questions for user {x_user_id} based on CV/JD inputs...")
+        role_questions = generate_questions_from_resume_jd(
+            data.resumeText, data.jobDescriptionText, data.role, data.level, data.language
+        )
+    else:
+        role_questions = MOCK_BANK.get(data.role, MOCK_BANK["Frontend Engineer"])
+        
     interview_id = str(uuid.uuid4())
 
     with get_db_cursor() as cursor:
@@ -401,13 +491,11 @@ def submit_answer(interview_id: str, data: AnswerSchema, x_user_id: str = Header
         if not question:
             raise HTTPException(status_code=404, detail="Question not found")
 
-        # Google-Style Non-blocking loop: write transcript immediately and mark as processing (-1)
         cursor.execute(
             "UPDATE questions SET answer_text = ?, score = -1, critique = 'Processing...' WHERE id = ?",
             (data.answerText, data.questionId)
         )
 
-        # Queue the grading task asynchronously
         grading_queue.put({
             "question_id": data.questionId,
             "answer_text": data.answerText,
