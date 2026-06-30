@@ -10,7 +10,7 @@ export async function GET() {
       return NextResponse.json({ authenticated: false }, { status: 401 });
     }
 
-    const response = await fetch(`${AUTH_SERVICE_URL}/api/auth/user/${session.userId}`);
+    const response = await fetch(`${AUTH_SERVICE_URL}/api/internal/users/${session.userId}`);
     const data = await response.json();
 
     if (!response.ok) {
