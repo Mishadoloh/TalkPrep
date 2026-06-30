@@ -4,23 +4,25 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import Header from "@/components/Header";
 import BackgroundBlobs from "@/components/BackgroundBlobs";
-import { Mic, CheckCircle, Flame, Star, Volume2, Sparkles } from "lucide-react";
+import { Mic, Search, Globe, Sparkles, Volume2 } from "lucide-react";
 import { getTranslation, Locale } from "@/lib/translations";
+import { playBeepSound } from "@/lib/audio-effects";
 
-export default function MarketingPage() {
+export default function GooglePage() {
   const [locale, setLocale] = useState<Locale>("en-US");
 
-  // Mini Sandbox State for Realtime Speech-to-Text demo
+  // Search input state
+  const [searchQuery, setSearchQuery] = useState("Frontend Engineer");
+
+  // Sandbox Speech state
   const [isListening, setIsListening] = useState(false);
   const [sandboxTranscript, setSandboxTranscript] = useState("");
   const [recognitionSupported, setRecognitionSupported] = useState(true);
 
   useEffect(() => {
-    // Read initial locale
     const saved = localStorage.getItem("talkprep_locale") as Locale;
     if (saved) setLocale(saved);
 
-    // Subscribe to locale updates
     const handleLocale = (e: Event) => {
       const detail = (e as CustomEvent).detail as Locale;
       if (detail) setLocale(detail);
@@ -31,7 +33,6 @@ export default function MarketingPage() {
   }, []);
 
   useEffect(() => {
-    // Check speech recognition support
     if (typeof window !== "undefined") {
       const SpeechRecognition =
         (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -40,6 +41,12 @@ export default function MarketingPage() {
       }
     }
   }, []);
+
+  // SEO Metatags
+  useEffect(() => {
+    document.title = getTranslation(locale, "metaTitleHome");
+    document.querySelector('meta[name="description"]')?.setAttribute("content", getTranslation(locale, "metaDescHome"));
+  }, [locale]);
 
   const toggleSandboxListening = () => {
     if (!recognitionSupported) {
@@ -61,7 +68,8 @@ export default function MarketingPage() {
 
     recognition.onstart = () => {
       setIsListening(true);
-      setSandboxTranscript(locale === "uk-UA" ? "Слухаємо відповідь... Говоріть у мікрофон." : "Listening... Speak into your microphone.");
+      playBeepSound();
+      setSandboxTranscript(locale === "uk-UA" ? "Говоріть у мікрофон..." : "Listening... Speak now.");
     };
 
     recognition.onresult = (event: any) => {
@@ -70,10 +78,11 @@ export default function MarketingPage() {
         finalTranscript += event.results[i][0].transcript;
       }
       setSandboxTranscript(finalTranscript || (locale === "uk-UA" ? "Продовжуйте говорити..." : "Keep speaking..."));
+      setSearchQuery(finalTranscript); // Update query box on the fly!
     };
 
     recognition.onerror = (e: any) => {
-      console.error("Speech error:", e);
+      console.error(e);
       setIsListening(false);
     };
 
@@ -81,15 +90,16 @@ export default function MarketingPage() {
       setIsListening(false);
     };
 
-    // Start recognition
     recognition.start();
-
-    // Auto-stop after 15 seconds to avoid battery/processing drain in demo
     setTimeout(() => {
-      if (recognition) {
-        recognition.stop();
-      }
+      if (recognition) recognition.stop();
     }, 15000);
+  };
+
+  const handleLanguageChange = (loc: Locale) => {
+    localStorage.setItem("talkprep_locale", loc);
+    setLocale(loc);
+    window.dispatchEvent(new CustomEvent("locale-changed", { detail: loc }));
   };
 
   return (
@@ -97,160 +107,173 @@ export default function MarketingPage() {
       <Header />
       <BackgroundBlobs />
 
-      <main style={{ flex: 1, paddingBottom: "80px" }}>
-        {/* 1. Hero Section */}
-        <section style={{ textAlign: "center", padding: "80px 24px 60px", maxWidth: "800px", margin: "0 auto" }}>
-          <div
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "8px",
-              background: "rgba(124, 77, 255, 0.1)",
-              border: "1px solid rgba(124, 77, 255, 0.2)",
-              padding: "6px 16px",
-              borderRadius: "9999px",
-              color: "var(--color-text-primary)",
-              fontSize: "0.85rem",
-              fontWeight: 600,
-              marginBottom: "24px",
+      <main style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "60px 24px 100px" }}>
+        
+        {/* GOOGLE LOGO IN GOOGLE COLOR ACCENTS */}
+        <section style={{ textAlign: "center", marginBottom: "30px" }}>
+          <h1 style={{ fontSize: "5rem", fontWeight: 800, letterSpacing: "-0.05em", userSelect: "none", display: "flex", justifyContent: "center" }}>
+            <span style={{ color: "#4285f4" }}>T</span>
+            <span style={{ color: "#ea4335" }}>a</span>
+            <span style={{ color: "#fbbc05" }}>l</span>
+            <span style={{ color: "#4285f4" }}>k</span>
+            <span style={{ color: "#34a853" }}>P</span>
+            <span style={{ color: "#ea4335" }}>r</span>
+            <span style={{ color: "#fbbc05" }}>e</span>
+            <span style={{ color: "#34a853" }}>p</span>
+          </h1>
+          <p style={{ color: "var(--color-text-secondary)", fontSize: "1.1rem", marginTop: "-10px", fontWeight: 500 }}>
+            {locale === "uk-UA" ? "ШІ-Тренажер Технічних Співбесід" : "AI Technical Interview Search engine"}
+          </p>
+        </section>
+
+        {/* GOOGLE PILL SEARCH INPUT BOX */}
+        <section style={{ width: "100%", maxWidth: "600px", marginBottom: "30px", position: "relative" }}>
+          <div 
+            style={{ 
+              display: "flex", 
+              alignItems: "center", 
+              background: "rgba(255, 255, 255, 0.03)", 
+              border: isListening ? "1.5px solid var(--color-secondary)" : "1.5px solid var(--border-color)", 
+              boxShadow: isListening ? "0 0 20px var(--color-secondary-glow)" : "0 4px 12px rgba(0,0,0,0.15)",
+              padding: "14px 20px", 
+              borderRadius: "var(--radius-full)", 
+              transition: "var(--transition-normal)"
             }}
           >
-            <Sparkles size={14} style={{ color: "var(--color-secondary)" }} />
-            {locale === "uk-UA" ? "Голосові технічні співбесіди нового покоління" : "Next-Gen AI Mock Technical Interviews"}
-          </div>
-          
-          <h1 style={{ fontSize: "3.5rem", lineHeight: "1.1", marginBottom: "20px" }}>
-            {getTranslation(locale, "heroTitle")}{" "}
-            <span className="gradient-text-primary">{getTranslation(locale, "heroHighlight")}</span>
-          </h1>
-          <p style={{ fontSize: "1.2rem", maxWidth: "600px", margin: "0 auto 36px", lineHeight: "1.6", color: "var(--color-text-secondary)" }}>
-            {getTranslation(locale, "heroDesc")}
-          </p>
-          <div style={{ display: "flex", gap: "16px", justifyContent: "center", flexWrap: "wrap" }}>
-            <Link href="/register" className="btn btn-primary" style={{ padding: "14px 32px", fontSize: "1rem" }}>
-              {locale === "uk-UA" ? "Почати співбесіду" : "Start Free Session"}
-            </Link>
-            <a href="#features" className="btn btn-secondary" style={{ padding: "14px 32px", fontSize: "1rem" }}>
-              {locale === "uk-UA" ? "Дізнатись більше" : "Learn More"}
-            </a>
-          </div>
-        </section>
-
-        {/* 2. Interactive Voice Demo Sandbox */}
-        <section style={{ padding: "0 24px 60px", maxWidth: "700px", margin: "0 auto" }}>
-          <div className="glass-card" style={{ padding: "30px", border: "1px solid rgba(124, 77, 255, 0.25)", position: "relative" }}>
-            <div style={{ position: "absolute", top: "-12px", right: "20px" }}>
-              <span className="badge badge-pro" style={{ background: "var(--color-secondary)", color: "var(--bg-primary)", fontSize: "0.75rem", fontWeight: 700 }}>
-                {locale === "uk-UA" ? "ТЕСТОВИЙ МІКРОФОН" : "INTERACTIVE DEMO"}
-              </span>
-            </div>
+            <Search size={18} style={{ color: "var(--color-text-muted)", marginRight: "12px" }} />
             
-            <h3 style={{ fontSize: "1.3rem", marginBottom: "12px", display: "flex", alignItems: "center", gap: "8px" }}>
-              <Volume2 size={20} style={{ color: "var(--color-secondary)" }} />
-              {locale === "uk-UA" ? "Перевірте свій голосовий пристрій" : "Test Your Voice Interface Now"}
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "var(--color-text-primary)",
+                fontSize: "1.05rem",
+                width: "100%",
+                outline: "none"
+              }}
+              placeholder={locale === "uk-UA" ? "Яку вакансію практикуємо?" : "What engineering role do you want to practice?"}
+            />
+
+            {/* Simulated Google Voice Mic Button */}
+            <button
+              onClick={toggleSandboxListening}
+              style={{
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                padding: "2px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                outline: "none"
+              }}
+              title={locale === "uk-UA" ? "Усний ввід" : "Voice Practice Input"}
+            >
+              <Mic 
+                size={20} 
+                style={{ 
+                  color: isListening ? "var(--color-secondary)" : "#4285f4",
+                  filter: isListening ? "drop-shadow(0 0 8px var(--color-secondary))" : "none",
+                  transition: "color 0.2s"
+                }} 
+              />
+            </button>
+          </div>
+
+          {/* Sandbox spoken results overlay inside the Google flow */}
+          {isListening && (
+            <div 
+              className="glass-card" 
+              style={{ 
+                position: "absolute", 
+                top: "65px", 
+                left: 0, 
+                right: 0, 
+                padding: "20px", 
+                border: "1px solid var(--border-glow)",
+                zIndex: 10,
+                textAlign: "center"
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "center", gap: "4px", marginBottom: "12px" }}>
+                <span className="dot" style={{ background: "#4285f4", width: "8px", height: "8px", borderRadius: "50%", animation: "pulseGlow 1s infinite" }}></span>
+                <span className="dot" style={{ background: "#ea4335", width: "8px", height: "8px", borderRadius: "50%", animation: "pulseGlow 1.2s infinite" }}></span>
+                <span className="dot" style={{ background: "#fbbc05", width: "8px", height: "8px", borderRadius: "50%", animation: "pulseGlow 1.4s infinite" }}></span>
+                <span className="dot" style={{ background: "#34a853", width: "8px", height: "8px", borderRadius: "50%", animation: "pulseGlow 1.6s infinite" }}></span>
+              </div>
+              <p style={{ fontFamily: "var(--font-mono)", fontSize: "0.85rem", color: "var(--color-text-secondary)" }}>
+                {sandboxTranscript}
+              </p>
+            </div>
+          )}
+        </section>
+
+        {/* GOOGLE ACTION BUTTONS */}
+        <section style={{ display: "flex", gap: "12px", marginBottom: "50px" }}>
+          <Link href="/register" className="btn btn-secondary" style={{ padding: "10px 20px", fontSize: "0.9rem", border: "1px solid var(--border-color)", background: "rgba(255,255,255,0.02)" }}>
+            {locale === "uk-UA" ? "Шукати співбесіду" : "Interview Me"}
+          </Link>
+          <button 
+            onClick={() => {
+              setSandboxTranscript(locale === "uk-UA" ? "«Реакт віртуальний дом це легка копія реального дома»" : "“React Virtual DOM is a lightweight copy of the real DOM.”");
+              toggleSandboxListening();
+            }} 
+            className="btn btn-secondary" 
+            style={{ padding: "10px 20px", fontSize: "0.9rem", border: "1px solid var(--border-color)", background: "rgba(255,255,255,0.02)" }}
+          >
+            {locale === "uk-UA" ? "Мені пощастить (Тест)" : "I'm Feeling Lucky"}
+          </button>
+        </section>
+
+        {/* GOOGLE LOCALIZED OFFERS */}
+        <section style={{ fontSize: "0.85rem", color: "var(--color-text-secondary)", display: "flex", gap: "8px", alignItems: "center" }}>
+          <Globe size={14} style={{ color: "var(--color-text-muted)" }} />
+          <span>
+            {locale === "uk-UA" ? "Тренажер доступний мовами:" : "TalkPrep offered in:"}
+          </span>
+          <button onClick={() => handleLanguageChange("en-US")} style={{ background: "transparent", border: "none", color: "#4285f4", cursor: "pointer", textDecoration: "underline", outline: "none" }}>English</button>
+          <button onClick={() => handleLanguageChange("uk-UA")} style={{ background: "transparent", border: "none", color: "#4285f4", cursor: "pointer", textDecoration: "underline", outline: "none" }}>Українська</button>
+        </section>
+
+        {/* SYSTEM HIGHLIGHT CARDS (GOOGLE INTEGRATION) */}
+        <section style={{ width: "100%", maxWidth: "900px", marginTop: "80px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "24px" }}>
+          <div className="glass-card" style={{ padding: "24px", borderLeft: "4px solid #4285f4" }}>
+            <h3 style={{ fontSize: "1.1rem", marginBottom: "8px", color: "var(--color-text-primary)" }}>
+              {locale === "uk-UA" ? "ШІ-Грейдинг Google Gemini" : "Google Gemini Grading"}
             </h3>
-            <p style={{ fontSize: "0.95rem", marginBottom: "20px", color: "var(--color-text-secondary)" }}>
+            <p style={{ fontSize: "0.85rem", color: "var(--color-text-secondary)", lineHeight: "1.5" }}>
               {locale === "uk-UA" 
-                ? "Увімкніть дозвіл на використання мікрофона, натисніть кнопку нижче та скажіть:" 
-                : "Enable microphone permissions, click the button below, and say:"} <br />
-              <strong style={{ color: "var(--color-text-primary)" }}>
-                {locale === "uk-UA" 
-                  ? "«Реакт віртуальний дом це легка копія реального дома.»" 
-                  : "“React Virtual DOM is a lightweight copy of the real DOM.”"}
-              </strong>
+                ? "Миттєвий розбір відповідей моделлю gemini-2.5-flash із підрахунком слів-паразитів." 
+                : "Real-time query evaluations run through gemini-2.5-flash to assess your exact vocabulary."}
             </p>
+          </div>
 
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "20px" }}>
-              <button
-                onClick={toggleSandboxListening}
-                className={`btn ${isListening ? "btn-cyan" : "btn-primary"}`}
-                style={{
-                  width: "70px",
-                  height: "70px",
-                  borderRadius: "50%",
-                  padding: 0,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  boxShadow: isListening ? "var(--shadow-glow-cyan)" : "var(--shadow-glow)",
-                  animation: isListening ? "pulseGlow 1s infinite alternate" : "none",
-                }}
-                title={isListening ? "Click to stop" : "Click to speak"}
-              >
-                <Mic size={28} />
-              </button>
+          <div className="glass-card" style={{ padding: "24px", borderLeft: "4px solid #ea4335" }}>
+            <h3 style={{ fontSize: "1.1rem", marginBottom: "8px", color: "var(--color-text-primary)" }}>
+              {locale === "uk-UA" ? "Голосовий Синтез мовлення" : "Voice Synthesis Engine"}
+            </h3>
+            <p style={{ fontSize: "0.85rem", color: "var(--color-text-secondary)", lineHeight: "1.5" }}>
+              {locale === "uk-UA"
+                ? "Усні питання озвучуються реалістичним рекрутерським темпом на 15 мовах."
+                : "Questions read out loud by the browser voice engine to build strong auditory memory."}
+            </p>
+          </div>
 
-              <div
-                style={{
-                  width: "100%",
-                  minHeight: "80px",
-                  background: "rgba(0, 0, 0, 0.3)",
-                  border: "1px solid var(--border-color)",
-                  borderRadius: "var(--radius-sm)",
-                  padding: "16px",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "0.9rem",
-                  color: sandboxTranscript ? "var(--color-text-primary)" : "var(--color-text-muted)",
-                  textAlign: "center",
-                }}
-              >
-                {sandboxTranscript || (locale === "uk-UA" ? "Результат розпізнавання з'явиться тут в реальному часі..." : "Your real-time transcription will print here...")}
-              </div>
-            </div>
+          <div className="glass-card" style={{ padding: "24px", borderLeft: "4px solid #fbbc05" }}>
+            <h3 style={{ fontSize: "1.1rem", marginBottom: "8px", color: "var(--color-text-primary)" }}>
+              {locale === "uk-UA" ? "Аудіо-кліки та звуки" : "Auditory Micro-chimes"}
+            </h3>
+            <p style={{ fontSize: "0.85rem", color: "var(--color-text-secondary)", lineHeight: "1.5" }}>
+              {locale === "uk-UA"
+                ? "Система відтворює нативні технічні звукові сигнали та успішні акорди."
+                : "Synthesizer chords and beeps play automatically to guide your recording phases."}
+            </p>
           </div>
         </section>
 
-        {/* 3. Features Grid */}
-        <section id="features" style={{ padding: "80px 24px", borderTop: "1px solid var(--border-color)", background: "rgba(255, 255, 255, 0.01)" }}>
-          <div className="container">
-            <h2 style={{ textAlign: "center", fontSize: "2rem", marginBottom: "48px" }}>
-              {locale === "uk-UA" ? "Чому розробники обирають TalkPrep" : "Why Developers Practice on TalkPrep"}
-            </h2>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "30px" }}>
-              <div className="glass-card" style={{ padding: "24px" }}>
-                <div style={{ background: "rgba(124, 77, 255, 0.1)", width: "40px", height: "40px", borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "16px" }}>
-                  <Flame style={{ color: "var(--color-secondary)" }} size={20} />
-                </div>
-                <h4 style={{ fontSize: "1.1rem", marginBottom: "8px" }}>
-                  {locale === "uk-UA" ? "ШІ-Розбір та оцінка" : "AI Grade Report"}
-                </h4>
-                <p style={{ color: "var(--color-text-secondary)", fontSize: "0.9rem", lineHeight: "1.5" }}>
-                  {locale === "uk-UA"
-                    ? "Отримуйте миттєві бали від 0 до 100 за кожну технічну відповідь та дізнавайтеся, що саме ви пропустили з ідеальної відповіді."
-                    : "Receive technical scorecards from 0 to 100 on every spoken answer and view exactly what keywords you missed."}
-                </p>
-              </div>
-
-              <div className="glass-card" style={{ padding: "24px" }}>
-                <div style={{ background: "rgba(0, 229, 255, 0.1)", width: "40px", height: "40px", borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "16px" }}>
-                  <Mic style={{ color: "var(--color-cyan)" }} size={20} />
-                </div>
-                <h4 style={{ fontSize: "1.1rem", marginBottom: "8px" }}>
-                  {locale === "uk-UA" ? "Усне мовлення" : "Real Out-Loud Speaking"}
-                </h4>
-                <p style={{ color: "var(--color-text-secondary)", fontSize: "0.9rem", lineHeight: "1.5" }}>
-                  {locale === "uk-UA"
-                    ? "Розпізнавання голосу зчитує ваші слова та відстежує зайві слова («ее», «мм», «типу»), допомагаючи покращити темп та впевненість."
-                    : "Continuous voice captures track filler words like 'um' and 'like', improving pacing and technical phrasing."}
-                </p>
-              </div>
-
-              <div className="glass-card" style={{ padding: "24px" }}>
-                <div style={{ background: "rgba(76, 175, 80, 0.1)", width: "40px", height: "40px", borderRadius: "8px", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "16px" }}>
-                  <CheckCircle style={{ color: "#4caf50" }} size={20} />
-                </div>
-                <h4 style={{ fontSize: "1.1rem", marginBottom: "8px" }}>
-                  {locale === "uk-UA" ? "15 підтримуваних мов" : "15 Languages Integrated"}
-                </h4>
-                <p style={{ color: "var(--color-text-secondary)", fontSize: "0.9rem", lineHeight: "1.5" }}>
-                  {locale === "uk-UA"
-                    ? "Співбесіду можна проходити будь-якою з 15 мов. Система сама перемкне голос ШІ та мікрофон під вашу мову."
-                    : "Complete practices in 15 different languages. Synthesizer and recognition translate context dynamically."}
-                </p>
-              </div>
-            </div>
-          </div>
-        </section>
       </main>
     </>
   );
