@@ -1,13 +1,20 @@
 import os
 import sqlite3
 import hashlib
-import secrets
-import uuid
-from fastapi import FastAPI, HTTPException, Response, status
+import binascii
+import logging
+from datetime import datetime
+from contextlib import contextmanager
+from fastapi import FastAPI, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, EmailStr, Field
 
-app = FastAPI(title="TalkPrep Auth Service (Python)")
+# Setup logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("auth-service")
+
+app = FastAPI(title="TalkPrep Auth Service (Python Optimized)")
 
 # CORS
 app.add_middleware(
@@ -18,241 +25,233 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# SQLite setup
 DB_PATH = os.path.join(os.path.dirname(__file__), "users.db")
 
-def get_db():
+# Database Context Manager with WAL mode enabled
+@contextmanager
+def get_db_cursor():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
-
-# Initialize DB structure using raw SQL
-def init_db():
-    conn = get_db()
+    # Enable WAL mode for concurrent write operations
+    conn.execute("PRAGMA journal_mode=WAL;")
     cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        email TEXT UNIQUE,
-        username TEXT UNIQUE,
-        password_hash TEXT,
-        is_pro BOOLEAN DEFAULT 0,
-        credits INTEGER DEFAULT 1,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """)
-    conn.commit()
-    conn.close()
+    try:
+        yield cursor
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Database transaction error, rolled back: {e}")
+        raise e
+    finally:
+        conn.close()
+
+def init_db():
+    with get_db_cursor() as cursor:
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            email TEXT UNIQUE,
+            username TEXT,
+            password_hash TEXT,
+            password_salt TEXT,
+            is_pro INTEGER DEFAULT 0,
+            credits INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        logger.info("Auth Database structure validated.")
 
 init_db()
 
-# Password Hashing utility (PBKDF2 SHA512)
-def hash_password(password: str) -> str:
-    salt = secrets.token_hex(16)
-    db_hash = hashlib.pbkdf2_hmac("sha512", password.encode("utf-8"), salt.encode("utf-8"), 1000).hex()
-    return f"{salt}:{db_hash}"
-
-def verify_password(password: str, stored_hash: str) -> bool:
-    try:
-        salt, db_hash = stored_hash.split(":")
-        verify_hash = hashlib.pbkdf2_hmac("sha512", password.encode("utf-8"), salt.encode("utf-8"), 1000).hex()
-        return db_hash == verify_hash
-    except Exception:
-        return False
+# Global Error Handler
+@app.exception_handler(Exception)
+def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled Exception on {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"success": False, "error": "Internal server error. Please try again later."}
+    )
 
 # Pydantic schemas
 class RegisterSchema(BaseModel):
-    email: str
-    username: str
-    password: str
+    email: EmailStr
+    username: str = Field(..., min_length=2)
+    password: str = Field(..., min_length=6)
 
 class LoginSchema(BaseModel):
-    loginIdentifier: str
+    email: EmailStr
     password: str
 
-class UpgradeSchema(BaseModel):
+class CreditUpdateSchema(BaseModel):
     type: str
     credits: int
 
-class SeedSchema(BaseModel):
-    userId: str
+# Security Helpers using PBKDF2 SHA512
+def hash_password(password: str, salt: bytes = None) -> tuple[str, str]:
+    if salt is None:
+        salt = os.urandom(32)
+    pwd_hash = hashlib.pbkdf2_hmac("sha512", password.encode("utf-8"), salt, 100000)
+    return binascii.hexlify(pwd_hash).decode("utf-8"), binascii.hexlify(salt).decode("utf-8")
 
-# 1. Auth: Register
+def verify_password(password: str, salt_hex: str, hash_hex: str) -> bool:
+    salt = binascii.unhexlify(salt_hex)
+    computed_hash, _ = hash_password(password, salt)
+    return computed_hash == hash_hex
+
+# --- HTTP ROUTES ---
+
 @app.post("/api/auth/register")
 def register(data: RegisterSchema):
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        # Check existing
-        cursor.execute("SELECT id FROM users WHERE email = ? OR username = ?", (data.email, data.username))
+    email_clean = data.email.lower().strip()
+    
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT id FROM users WHERE email = ?", (email_clean,))
         if cursor.fetchone():
-            raise HTTPException(status_code=400, detail="Email or username already registered")
+            raise HTTPException(status_code=400, detail="Email is already registered")
 
-        user_id = str(uuid.uuid4())
-        pwd_hash = hash_password(data.password)
+        user_id = str(hashlib.md5(email_clean.encode()).hexdigest()) + f"-{os.urandom(4).hex()}"
+        pwd_hash, pwd_salt = hash_password(data.password)
 
         cursor.execute(
-            "INSERT INTO users (id, email, username, password_hash, credits) VALUES (?, ?, ?, ?, ?)",
-            (user_id, data.email, data.username, pwd_hash, 1)
+            "INSERT INTO users (id, email, username, password_hash, password_salt, is_pro, credits) VALUES (?, ?, ?, ?, ?, 0, 1)",
+            (user_id, email_clean, data.username, pwd_hash, pwd_salt)
         )
-        conn.commit()
-
+        
+        logger.info(f"Registered new candidate: {user_id}")
         return {
             "success": True,
             "user": {
                 "id": user_id,
-                "email": data.email,
+                "email": email_clean,
                 "username": data.username,
                 "isPro": False,
                 "credits": 1
             }
         }
-    finally:
-        conn.close()
 
-# 2. Auth: Login
 @app.post("/api/auth/login")
 def login(data: LoginSchema):
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT * FROM users WHERE email = ? OR username = ?", (data.loginIdentifier, data.loginIdentifier))
-        row = cursor.fetchone()
+    email_clean = data.email.lower().strip()
 
-        if not row or not verify_password(data.password, row["password_hash"]):
-            raise HTTPException(status_code=400, detail="Invalid credentials")
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT * FROM users WHERE email = ?", (email_clean,))
+        user = cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
 
-        return {
-            "success": True,
-            "user": {
-                "id": row["id"],
-                "email": row["email"],
-                "username": row["username"],
-                "isPro": bool(row["is_pro"]),
-                "credits": row["credits"]
-            }
-        }
-    finally:
-        conn.close()
-
-# 3. Auth: User Details
-@app.get("/api/auth/user/{user_id}")
-def get_user(user_id: str):
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT id, email, username, is_pro, credits, created_at FROM users WHERE id = ?", (user_id,))
-        row = cursor.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="User not found")
+        if not verify_password(data.password, user["password_salt"], user["password_hash"]):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
 
         return {
             "success": True,
             "user": {
-                "id": row["id"],
-                "email": row["email"],
-                "username": row["username"],
-                "isPro": bool(row["is_pro"]),
-                "credits": row["credits"],
-                "createdAt": row["created_at"]
+                "id": user["id"],
+                "email": user["email"],
+                "username": user["username"],
+                "isPro": bool(user["is_pro"]),
+                "credits": user["credits"]
             }
         }
-    finally:
-        conn.close()
 
-# 4. Internal: Get credits status
 @app.get("/api/internal/users/{user_id}")
-def internal_get_user(user_id: str):
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT id, is_pro, credits FROM users WHERE id = ?", (user_id,))
-        row = cursor.fetchone()
-        if not row:
+def get_user_profile(user_id: str):
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        user = cursor.fetchone()
+        if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
         return {
-            "id": row["id"],
-            "isPro": bool(row["is_pro"]),
-            "credits": row["credits"]
+            "success": True,
+            "user": {
+                "id": user["id"],
+                "email": user["email"],
+                "username": user["username"],
+                "isPro": bool(user["is_pro"]),
+                "credits": user["credits"]
+            }
         }
-    finally:
-        conn.close()
 
-# 5. Internal: Deduct credit
 @app.post("/api/internal/users/{user_id}/deduct-credit")
 def deduct_credit(user_id: str):
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT credits FROM users WHERE id = ?", (user_id,))
-        row = cursor.fetchone()
-        if not row:
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        user = cursor.fetchone()
+        if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        credits = row["credits"]
-        if credits <= 0:
+        if user["is_pro"]:
+            return {
+                "success": True,
+                "user": {
+                    "id": user["id"],
+                    "isPro": True,
+                    "credits": user["credits"]
+                }
+            }
+
+        if user["credits"] <= 0:
             raise HTTPException(status_code=402, detail="Insufficient credits")
 
-        new_credits = credits - 1
+        new_credits = user["credits"] - 1
         cursor.execute("UPDATE users SET credits = ? WHERE id = ?", (new_credits, user_id))
-        conn.commit()
+        logger.info(f"Deducted credit from user: {user_id}. Remaining: {new_credits}")
+        
+        return {
+            "success": True,
+            "user": {
+                "id": user["id"],
+                "isPro": False,
+                "credits": new_credits
+            }
+        }
 
-        return {"success": True, "credits": new_credits}
-    finally:
-        conn.close()
-
-# 6. Internal: Upgrade credits/Pro
 @app.post("/api/internal/users/{user_id}/upgrade")
-def upgrade_user(user_id: str, data: UpgradeSchema):
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT credits, is_pro FROM users WHERE id = ?", (user_id,))
-        row = cursor.fetchone()
-        if not row:
+def upgrade_user(user_id: str, data: CreditUpdateSchema):
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        user = cursor.fetchone()
+        if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        if data.type == "SUBSCRIPTION":
-            cursor.execute("UPDATE users SET is_pro = 1 WHERE id = ?", (user_id,))
-            is_pro = True
-            credits = row["credits"]
-        else:
-            credits = row["credits"] + data.credits
-            cursor.execute("UPDATE users SET credits = ? WHERE id = ?", (credits, user_id))
-            is_pro = bool(row["is_pro"])
+        is_pro = 1 if data.type == "SUBSCRIPTION" else user["is_pro"]
+        credits_increment = data.credits if data.type == "PACK" else 0
+        new_credits = user["credits"] + credits_increment
 
-        conn.commit()
-        return {"success": True, "user": {"isPro": is_pro, "credits": credits}}
-    finally:
-        conn.close()
+        cursor.execute(
+            "UPDATE users SET is_pro = ?, credits = ? WHERE id = ?",
+            (is_pro, new_credits, user_id)
+        )
+        logger.info(f"Upgraded user {user_id}: Pro={is_pro}, Credits={new_credits}")
 
-# 7. Internal: Downgrade subscription
+        return {
+            "success": True,
+            "user": {
+                "id": user_id,
+                "isPro": bool(is_pro),
+                "credits": new_credits
+            }
+        }
+
 @app.post("/api/internal/users/{user_id}/downgrade")
 def downgrade_user(user_id: str):
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("UPDATE users SET is_pro = 0 WHERE id = ?", (user_id,))
-        conn.commit()
-        
-        cursor.execute("SELECT credits, is_pro FROM users WHERE id = ?", (user_id,))
-        row = cursor.fetchone()
-        return {"success": True, "user": {"isPro": bool(row["is_pro"]), "credits": row["credits"]}}
-    finally:
-        conn.close()
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
 
-# 8. Internal: Developer Seeding
-@app.post("/api/internal/dev/seed")
-def seed_user(data: SeedSchema):
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("UPDATE users SET is_pro = 1, credits = 6 WHERE id = ?", (data.userId,))
-        conn.commit()
-        return {"success": True}
-    finally:
-        conn.close()
+        cursor.execute("UPDATE users SET is_pro = 0 WHERE id = ?", (user_id,))
+        logger.info(f"Downgraded subscription for user: {user_id}")
+
+        return {
+            "success": True,
+            "user": {
+                "id": user_id,
+                "isPro": False,
+                "credits": user["credits"]
+            }
+        }
 
 if __name__ == "__main__":
     import uvicorn

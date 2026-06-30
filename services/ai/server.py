@@ -1,15 +1,24 @@
 import os
 import sqlite3
 import uuid
-import json
+import logging
 import requests
-from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Header, status
+import re
+from datetime import datetime
+from contextlib import contextmanager
+from fastapi import FastAPI, HTTPException, Header, status, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional, List
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+from typing import List, Optional
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
-app = FastAPI(title="TalkPrep AI & Grading Service (Python)")
+# Setup logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("ai-service")
+
+app = FastAPI(title="TalkPrep AI Service (Python Optimized)")
 
 # CORS
 app.add_middleware(
@@ -22,564 +31,414 @@ app.add_middleware(
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "interviews.db")
 AUTH_SERVICE_URL = "http://localhost:3010"
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-def get_db():
+# Multi-language Filler word regex dictionary
+FILLER_PATTERNS = {
+    "en-US": [
+        re.compile(r"\buh\b", re.IGNORECASE),
+        re.compile(r"\bum\b", re.IGNORECASE),
+        re.compile(r"\blike\b", re.IGNORECASE),
+        re.compile(r"\bbasically\b", re.IGNORECASE),
+        re.compile(r"\byou know\b", re.IGNORECASE),
+        re.compile(r"\bactually\b", re.IGNORECASE),
+    ],
+    "uk-UA": [
+        re.compile(r"\bну\b", re.IGNORECASE),
+        re.compile(r"\bтипу\b", re.IGNORECASE),
+        re.compile(r"\bкоротше\b", re.IGNORECASE),
+        re.compile(r"\bе-е\b", re.IGNORECASE),
+        re.compile(r"\bм-м\b", re.IGNORECASE),
+        re.compile(r"\bтак би мовити\b", re.IGNORECASE),
+        re.compile(r"\bв принципі\b", re.IGNORECASE),
+    ]
+}
+
+# Database Context Manager with WAL mode
+@contextmanager
+def get_db_cursor():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
-
-# Initialize DB structure using raw SQL
-def init_db():
-    conn = get_db()
+    conn.execute("PRAGMA journal_mode=WAL;")
     cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS interviews (
-        id TEXT PRIMARY KEY,
-        user_id TEXT,
-        role TEXT,
-        level TEXT,
-        status TEXT,
-        language TEXT DEFAULT 'en-US',
-        overall_score INTEGER,
-        feedback TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS questions (
-        id TEXT PRIMARY KEY,
-        interview_id TEXT,
-        question_text TEXT,
-        answer_text TEXT,
-        score INTEGER,
-        critique TEXT,
-        ideal_answer TEXT,
-        FOREIGN KEY(interview_id) REFERENCES interviews(id) ON DELETE CASCADE
-    );
-    """)
-    conn.commit()
-    conn.close()
+    try:
+        yield cursor
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"AI Database transaction failed, rolled back: {e}")
+        raise e
+    finally:
+        conn.close()
+
+# Safe HTTP client with Exponential Backoff Retries for internal networking
+def get_http_session(retries=3, backoff_factor=0.3):
+    session = requests.Session()
+    retry = Retry(
+        total=retries,
+        read=retries,
+        connect=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=[500, 502, 503, 504],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+http_client = get_http_session()
+
+def init_db():
+    with get_db_cursor() as cursor:
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS interviews (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            role TEXT,
+            level TEXT,
+            language TEXT,
+            status TEXT,
+            overall_score INTEGER,
+            feedback TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS questions (
+            id TEXT PRIMARY KEY,
+            interview_id TEXT,
+            question_text TEXT,
+            answer_text TEXT,
+            score INTEGER,
+            critique TEXT,
+            ideal_answer TEXT,
+            FOREIGN KEY(interview_id) REFERENCES interviews(id)
+        );
+        """)
+        logger.info("AI Database structure validated.")
 
 init_db()
 
-# --- 1. LOCAL DATA & FALLBACK SCANNERS ---
+# Global Error Handler
+@app.exception_handler(Exception)
+def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"AI Service error on {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"success": False, "error": "AI service processing failed."}
+    )
 
-QUESTION_BANK = {
-  "Frontend Engineer": {
-    "Junior": [
-      {
-        "questionText": "What is the difference between let, const, and var in JavaScript?",
-        "idealAnswer": "var is function-scoped, can be redeclared, and is hoisted with undefined. let and const are block-scoped, cannot be redeclared in the same scope, and are not initialized during hoisting (Temporal Dead Zone). const variables must be initialized and cannot be reassigned."
-      },
-      {
-        "questionText": "Explain the difference between state and props in React.",
-        "idealAnswer": "Props are read-only configuration parameters passed down from a parent component. State is a private, mutable data structure managed internally within a component that triggers a re-render when updated."
-      },
-      {
-        "questionText": "What is the Virtual DOM and how does React use it to render pages?",
-        "idealAnswer": "The Virtual DOM is a lightweight JavaScript representation of the real DOM. React updates this virtual tree, compares it with the previous snapshot (diffing), and makes minimal modifications to the real DOM."
-      }
-    ],
-    "Mid": [
-      {
-        "questionText": "What is a closure in JavaScript and can you give a common use case?",
-        "idealAnswer": "A closure is the combination of a function bundled together with references to its surrounding state (lexical environment), allowing access to variables from an outer function scope even after it returned."
-      },
-      {
-        "questionText": "How does React's useEffect hook work, and how do you clean up side effects?",
-        "idealAnswer": "useEffect runs side effects after renders. Returning a function from the effect serving as the cleanup callback, running before unmount or subsequent runs."
-      }
-    ],
-    "Senior": [
-      {
-        "questionText": "How would you optimize a slow React application that suffers from excessive re-renders?",
-        "idealAnswer": "Profile using React DevTools. Memoize with React.memo, useMemo, and useCallback. Implement virtualized lists. Colocate states, debounce inputs, and lazy load dynamic imports."
-      }
-    ]
-  },
-  "Backend Engineer": {
-    "Junior": [
-      {
-        "questionText": "What is the difference between GET and POST HTTP requests?",
-        "idealAnswer": "GET retrieves data, appends parameters in URL query, is idempotent. POST sends data in body to create resources, is not idempotent."
-      }
-    ]
-  }
-}
-
-def get_random_questions(role, level, count=3):
-    role_bank = QUESTION_BANK.get(role, QUESTION_BANK["Frontend Engineer"])
-    level_bank = role_bank.get(level, role_bank.get("Mid", role_bank.get("Junior")))
-    import random
-    shuffled = list(level_bank)
-    random.shuffle(shuffled)
-    return shuffled[:count]
-
-KEYWORD_MAP = {
-  "let, const, and var": ["scope", "block", "hoist", "reassign", "redeclare", "temporal dead zone", "tdz"],
-  "state and props": ["read-only", "prop", "state", "mutable", "parent", "internal", "render"],
-  "virtual dom": ["lightweight", "diff", "reconciliation", "real dom", "update", "render"],
-  "closure": ["closure", "lexical", "scope", "inner", "outer", "privacy", "encapsulate"],
-  "useeffect": ["effect", "side effect", "dependency", "mount", "unmount", "cleanup"]
-}
-
-def grade_answer_offline(user_answer, ideal_answer, question_text):
-    answer = user_answer.strip()
-    if not answer or answer == "No response provided.":
-        return {"score": 0, "critique": "No response was recorded. Please speak clearly into the microphone.", "wordCount": 0, "fillersCount": 0}
-
-    words = answer.split()
-    word_count = len(words)
-
-    fillers = ["uh", "um", "like", "you know", "ah"]
-    fillers_count = 0
-    for w in words:
-        clean_word = "".join(filter(str.isalpha, w.lower()))
-        if clean_word in fillers:
-            fillers_count += 1
-
-    lowercase_answer = answer.lower()
-    lowercase_question = question_text.lower()
-    
-    matching_keywords = []
-    for topic, keywords in KEYWORD_MAP.items():
-        if topic.lower() in lowercase_question:
-            matching_keywords = keywords
-            break
-
-    if not matching_keywords:
-        matching_keywords = list(set([w.lower().replace(",", "").replace(".", "") for w in ideal_answer.split() if len(w) > 5]))[:5]
-
-    matched = 0
-    for k in matching_keywords:
-        if k in lowercase_answer:
-            matched += 1
-
-    keyword_score = (matched / len(matching_keywords)) * 100 if matching_keywords else 50
-    length_multiplier = 0.3 if word_count < 15 else 0.7 if word_count < 30 else 1.0
-    filler_rate = fillers_count / word_count if word_count > 0 else 0
-    penalty = 10 if filler_rate > 0.1 else 5 if filler_rate > 0.05 else 0
-
-    score = round(keyword_score * length_multiplier - penalty)
-    score = max(0, min(100, score))
-
-    critique = f"Graded response: {score}/100. "
-    if score >= 80:
-        critique += f"Excellent job! You covered key concepts clearly with minimal filler words ({fillers_count})."
-    elif score >= 60:
-        critique += "Decent answer. To improve, cover the concepts more thoroughly and try to reduce filler words."
-    else:
-        critique += "Too short or missing key conceptual keywords. Study the ideal answer reference and try again."
-
-    return {"score": score, "critique": critique, "wordCount": word_count, "fillersCount": fillers_count}
-
-LANGUAGES = {
-  "en-US": "English",
-  "uk-UA": "Ukrainian",
-  "es-ES": "Spanish",
-  "de-DE": "German",
-  "fr-FR": "French",
-  "it-IT": "Italian",
-  "pt-PT": "Portuguese",
-  "pl-PL": "Polish",
-  "tr-TR": "Turkish",
-  "ja-JP": "Japanese",
-  "zh-CN": "Chinese Mandarin",
-  "ko-KR": "Korean",
-  "nl-NL": "Dutch",
-  "sv-SE": "Swedish",
-  "ar-SA": "Arabic"
-}
-
-# --- 2. AI CLIENT FUNCTIONS ---
-
-def call_gemini(prompt: str) -> Optional[str]:
-    if not GEMINI_API_KEY:
-        return None
-    try:
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json"}
-        }
-        res = requests.post(GEMINI_API_URL, headers={"Content-Type": "application/json"}, json=payload, timeout=8)
-        if res.status_code == 200:
-            data = res.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-        return None
-    except Exception:
-        return None
-
-def generate_dynamic_questions_ai(role: str, level: str, language_name: str) -> Optional[List[dict]]:
-    prompt = f"""You are a professional technical recruiter.
-Generate exactly 3 challenging technical interview questions for a candidate interviewing for the role of '{role}' at experience level '{level}'.
-The questions should test core concepts, systems design, and hands-on practices.
-
-CRITICAL: You MUST write the "questionText" and "idealAnswer" values entirely in the language '{language_name}'.
-
-Return a JSON array containing objects with exactly these keys:
-[
-  {{
-    "questionText": "the interview question string in {language_name}",
-    "idealAnswer": "a detailed reference response explaining all critical technical concepts in {language_name}"
-  }}
-]"""
-    text = call_gemini(prompt)
-    if not text:
-        return None
-    try:
-        return json.loads(text.strip())
-    except Exception:
-        return None
-
-def grade_answer_with_ai(question_text: str, ideal_answer: str, user_answer: str, language_name: str) -> Optional[dict]:
-    prompt = f"""You are a senior engineering manager conducting a technical interview.
-Grade the candidate's spoken response to the technical question.
-Compare their answer to the ideal answer, taking into account keyword coverage, conceptual correctness, and structural clarity.
-
-Context:
-- Question Asked: "{question_text}"
-- Ideal Answer Key: "{ideal_answer}"
-- Candidate Spoken Response: "{user_answer}"
-
-CRITICAL: You MUST write the qualitative feedback "critique" entirely in the language '{language_name}'.
-
-Return a JSON object containing exactly these keys:
-{{
-  "score": <number from 0 to 100>,
-  "critique": "detailed feedback written in {language_name} highlighting what they did well, what keywords they missed, and advice to restructure"
-}}"""
-    text = call_gemini(prompt)
-    if not text:
-        return None
-    try:
-        return json.loads(text.strip())
-    except Exception:
-        return None
-
-# --- 3. PYDANTIC SCHEMAS ---
-
+# Pydantic schemas
 class StartInterviewSchema(BaseModel):
-    role: str
+    role: str = Field(..., min_length=2)
     level: str
-    language: Optional[str] = "en-US"
+    language: str
 
-class SubmitAnswerSchema(BaseModel):
+class AnswerSchema(BaseModel):
     questionId: str
     answerText: str
 
-class SeedSchema(BaseModel):
-    userId: str
+# Local fallback grading calculator
+def calculate_local_score(answer: str, reference: str, lang: str) -> tuple[int, str]:
+    if not answer or len(answer.strip()) < 5:
+        return 0, "No spoken answer provided or answer is too short to evaluate."
 
-# --- 4. HTTP ROUTES ---
+    # Multi-language Filler Word Detection
+    fillers = FILLER_PATTERNS.get(lang, FILLER_PATTERNS["en-US"])
+    filler_count = 0
+    for pattern in fillers:
+        filler_count += len(pattern.findall(answer))
+    
+    # Sound fillers
+    filler_count += len(re.findall(r"\b[ea]-+h+\b|\b[um]-+m+\b", answer, re.I))
+
+    # Keyword match check
+    ref_words = set(re.findall(r"\w+", reference.lower()))
+    ans_words = set(re.findall(r"\w+", answer.lower()))
+    matches = ref_words.intersection(ans_words)
+    
+    match_ratio = len(matches) / max(len(ref_words), 1)
+    base_score = int(match_ratio * 100)
+    
+    # Apply verbal filler penalty
+    penalty = min(filler_count * 5, 25)
+    final_score = max(base_score - penalty, 0)
+    
+    # Feedback feedback summary
+    critique = (
+        f"Conceptual coverage: {int(match_ratio*100)}%. "
+        f"We detected {filler_count} filler sound(s) ('uh', 'um', 'like', or local language equivalent). "
+        f"Deducted {penalty}% as pacing penalty."
+    ) if lang == "en-US" else (
+        f"Концептуальне охоплення еталону: {int(match_ratio*100)}%. "
+        f"Виявлено {filler_count} зайвих слів/звуків-паразитів. "
+        f"Знято {penalty}% як штраф за темп мовлення."
+    )
+    
+    return final_score, critique
+
+# Gemini integration helper
+def query_gemini_api(question: str, answer: str, ideal: str, lang: str) -> tuple[int, str]:
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return calculate_local_score(answer, ideal, lang)
+        
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    
+    prompt = f"""
+    You are a technical interviewer grading candidate answers.
+    Language of the interview: {lang}
+    Technical Question: "{question}"
+    Candidate Spoken Answer: "{answer}"
+    Reference Ideal Answer: "{ideal}"
+
+    Perform a strict evaluation. Return only a raw JSON object with this exact schema:
+    {{
+      "score": <integer from 0 to 100>,
+      "critique": "<2-3 sentence technical critique explaining correctness and missing keywords>"
+    }}
+    Do not add markdown formatting or wrapper tags.
+    """
+    
+    try:
+        res = http_client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=8)
+        if res.status_code == 200:
+            json_data = res.json()
+            raw_text = json_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            # Clean markdown codeblocks if AI output them
+            clean_json = re.sub(r"```json|```", "", raw_text).strip()
+            import json
+            parsed = json.loads(clean_json)
+            return int(parsed.get("score", 70)), str(parsed.get("critique", "Graded by Gemini."))
+    except Exception as e:
+        logger.warning(f"Failed to query Gemini API, falling back to local: {e}")
+        
+    return calculate_local_score(answer, ideal, lang)
+
+# Mock bank of questions
+MOCK_BANK = {
+    "Frontend Engineer": [
+        {
+            "q": "What is the difference between Virtual DOM and Real DOM in React?",
+            "ideal": "Virtual DOM is a lightweight, in-memory representation of the Real DOM. React uses it to batch updates and run a diffing algorithm (reconciliation) before updating the slow Real DOM."
+        },
+        {
+            "q": "Explain closures in JavaScript and how they are used.",
+            "ideal": "A closure is the combination of a function bundled together with references to its surrounding state (lexical environment). Closures allow inner functions to access outer scope variables even after the outer function has returned."
+        },
+        {
+            "q": "What are React Server Components and how do they differ from SSR?",
+            "ideal": "React Server Components run exclusively on the server, avoiding sending client-side JavaScript payloads. SSR turns React components into HTML on the server but still requires hydration on the client."
+        }
+    ],
+    "Backend Engineer": [
+        {
+            "q": "What is database indexing and how does it speed up queries?",
+            "ideal": "Database indexes are data structures (like B-trees) that store pointers to table rows. They speed up SELECT query retrieval speeds by avoiding full table scans, but increase write overhead on INSERT/UPDATE."
+        },
+        {
+            "q": "Explain the difference between SQL and NoSQL databases.",
+            "ideal": "SQL databases are relational, structured, table-based, and enforce ACID properties. NoSQL databases are non-relational, document/key-value based, schema-less, and scale horizontally."
+        },
+        {
+            "q": "How does Redis work as a caching layer?",
+            "ideal": "Redis is an in-memory key-value database. It caches frequent query results to achieve sub-millisecond retrieval times, reducing database read load."
+        }
+    ]
+}
+
+# --- HTTP ROUTES ---
 
 @app.post("/api/interview/start")
 def start_interview(data: StartInterviewSchema, x_user_id: str = Header(None)):
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # Call Auth Microservice to verify and deduct credits
+    # Call Auth microservice with resilient retry HTTP session to verify & deduct credit
     try:
-        auth_res = requests.get(f"{AUTH_SERVICE_URL}/api/internal/users/{x_user_id}", timeout=5)
-        if auth_res.status_code != 200:
-            raise HTTPException(status_code=404, detail="User profile verification failed downstream")
-        user_profile = auth_res.json()
-    except Exception:
+        deduct_res = http_client.post(
+            f"{AUTH_SERVICE_URL}/api/internal/users/{x_user_id}/deduct-credit",
+            timeout=5
+        )
+        if deduct_res.status_code != 200:
+            err_data = deduct_res.json()
+            raise HTTPException(
+                status_code=deduct_res.status_code,
+                detail=err_data.get("detail", "Deduction failed downstream")
+            )
+    except requests.exceptions.RequestException:
         raise HTTPException(status_code=502, detail="Auth service unreachable")
 
-    if not user_profile["isPro"] and user_profile["credits"] <= 0:
-        raise HTTPException(status_code=402, detail="Insufficient credits")
+    # Seed questions based on role
+    role_questions = MOCK_BANK.get(data.role, MOCK_BANK["Frontend Engineer"])
+    interview_id = str(uuid.uuid4())
 
-    # Generate questions
-    lang_name = LANGUAGES.get(data.language, "English")
-    questions = generate_dynamic_questions_ai(data.role, data.level, lang_name)
-    if not questions:
-        print("Fallback local questions used.")
-        questions = get_random_questions(data.role, data.level, 3)
-
-    # Deduct credit if not Pro
-    if not user_profile["isPro"]:
-        try:
-            deduct_res = requests.post(f"{AUTH_SERVICE_URL}/api/internal/users/{x_user_id}/deduct-credit", timeout=5)
-            if deduct_res.status_code != 200:
-                raise HTTPException(status_code=500, detail="Failed to deduct credit downstream")
-        except Exception:
-            raise HTTPException(status_code=502, detail="Auth service unreachable")
-
-    # Create interview record in interviews.db
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        interview_id = str(uuid.uuid4())
+    with get_db_cursor() as cursor:
+        # Create Interview record
         cursor.execute(
-            "INSERT INTO interviews (id, user_id, role, level, status, language) VALUES (?, ?, ?, ?, ?, ?)",
-            (interview_id, x_user_id, data.role, data.level, "IN_PROGRESS", data.language)
+            "INSERT INTO interviews (id, user_id, role, level, language, status) VALUES (?, ?, ?, ?, ?, ?)",
+            (interview_id, x_user_id, data.role, data.level, data.language, "IN_PROGRESS")
         )
         
-        saved_questions = []
-        for q in questions:
-            qid = str(uuid.uuid4())
+        # Create questions records
+        for q in role_questions:
             cursor.execute(
-                "INSERT INTO questions (id, interview_id, question_text, ideal_answer) VALUES (?, ?, ?, ?)",
-                (qid, interview_id, q["questionText"], q["idealAnswer"])
+                "INSERT INTO questions (id, interview_id, question_text, ideal_answer, score, critique) VALUES (?, ?, ?, ?, NULL, NULL)",
+                (str(uuid.uuid4()), interview_id, q["q"], q["ideal"])
             )
-            saved_questions.append({"id": qid, "questionText": q["questionText"]})
-        
-        conn.commit()
-        return {
-            "success": True,
-            "interviewId": interview_id,
-            "role": data.role,
-            "level": data.level,
-            "questions": saved_questions
-        }
-    finally:
-        conn.close()
+
+    logger.info(f"Started interview {interview_id} for user {x_user_id}")
+    return {"success": True, "interviewId": interview_id}
 
 @app.post("/api/interview/{interview_id}/answer")
-def submit_answer(interview_id: str, data: SubmitAnswerSchema, x_user_id: str = Header(None)):
+def submit_answer(interview_id: str, data: AnswerSchema, x_user_id: str = Header(None)):
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT * FROM interviews WHERE id = ?", (interview_id,))
+    with get_db_cursor() as cursor:
+        # Validate owner
+        cursor.execute("SELECT user_id, language FROM interviews WHERE id = ?", (interview_id,))
         interview = cursor.fetchone()
         if not interview:
-            raise HTTPException(status_code=404, detail="Interview session not found")
+            raise HTTPException(status_code=404, detail="Interview not found")
         if interview["user_id"] != x_user_id:
             raise HTTPException(status_code=403, detail="Forbidden")
 
+        # Validate question
         cursor.execute("SELECT * FROM questions WHERE id = ? AND interview_id = ?", (data.questionId, interview_id))
         question = cursor.fetchone()
         if not question:
             raise HTTPException(status_code=404, detail="Question not found")
 
-        offline = grade_answer_offline(data.answerText, question["ideal_answer"], question["question_text"])
-        lang_name = LANGUAGES.get(interview["language"], "English")
-        
-        score = offline["score"]
-        critique = offline["critique"]
-
-        ai_eval = grade_answer_with_ai(question["question_text"], question["ideal_answer"], data.answerText, lang_name)
-        if ai_eval:
-            score = ai_eval["score"]
-            critique = ai_eval["critique"]
+        # Grade response using Gemini/local analyzer
+        score, critique = query_gemini_api(
+            question["question_text"],
+            data.answerText,
+            question["ideal_answer"],
+            interview["language"]
+        )
 
         cursor.execute(
             "UPDATE questions SET answer_text = ?, score = ?, critique = ? WHERE id = ?",
             (data.answerText, score, critique, data.questionId)
         )
-        conn.commit()
 
-        return {
-            "success": True,
-            "questionId": data.questionId,
-            "score": score,
-            "critique": critique,
-            "wordCount": offline["wordCount"],
-            "fillersCount": offline["fillersCount"]
-        }
-    finally:
-        conn.close()
+    return {"success": True, "score": score, "critique": critique}
 
 @app.post("/api/interview/{interview_id}/finish")
 def finish_interview(interview_id: str, x_user_id: str = Header(None)):
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT * FROM interviews WHERE id = ?", (interview_id,))
+    with get_db_cursor() as cursor:
+        # Validate owner
+        cursor.execute("SELECT user_id, language FROM interviews WHERE id = ?", (interview_id,))
         interview = cursor.fetchone()
         if not interview:
-            raise HTTPException(status_code=404, detail="Interview session not found")
+            raise HTTPException(status_code=404, detail="Interview not found")
         if interview["user_id"] != x_user_id:
             raise HTTPException(status_code=403, detail="Forbidden")
 
+        # Fetch all questions to calculate overall score
         cursor.execute("SELECT score FROM questions WHERE interview_id = ?", (interview_id,))
         rows = cursor.fetchall()
         
-        scores = [r["score"] for r in rows if r["score"] is not None]
-        overall_score = round(sum(scores) / len(scores)) if scores else 0
-        is_ukrainian = interview["language"] == "uk-UA"
+        valid_scores = [r["score"] for r in rows if r["score"] is not None]
+        avg_score = sum(valid_scores) // len(valid_scores) if valid_scores else 0
 
-        if overall_score >= 85:
-            feedback = (
-                "Чудовий результат! Ви впевнено володієте технічною термінологією, детально пояснюєте процеси та структуруєте думки."
-                if is_ukrainian else "Excellent performance! You demonstrate a strong grasp of technical concepts and articulate them clearly."
-            )
-        elif overall_score >= 70:
-            feedback = (
-                "Хороший результат. Ви знаєте базу, але деякі відповіді можна зробити більш структурованими та навести приклади."
-                if is_ukrainian else "Solid technical foundation. You clearly understand core systems, though explanations could be more precise."
-            )
-        else:
-            feedback = (
-                "Рекомендуємо більше практики. Прогляньте еталонні відповіді та спробуйте давати ширші пояснення."
-                if is_ukrainian else "Further practice recommended. Focus on active recall and expanding your answers to cover critical concepts."
-            )
+        feedback = (
+            f"You finished the technical practice with an overall score of {avg_score}%. Review individual scores below."
+            if interview["language"] == "en-US" else
+            f"Ви завершили практичну співбесіду із загальним балом {avg_score}%. Ознайомтесь із ШІ-коментарями нижче."
+        )
 
         cursor.execute(
-            "UPDATE interviews SET status = 'COMPLETED', overall_score = ?, feedback = ? WHERE id = ?",
-            (overall_score, feedback, interview_id)
+            "UPDATE interviews SET status = 'FINISHED', overall_score = ?, feedback = ? WHERE id = ?",
+            (avg_score, feedback, interview_id)
         )
-        conn.commit()
 
-        # Fetch full updated interview
-        cursor.execute("SELECT * FROM interviews WHERE id = ?", (interview_id,))
-        updated_interview = cursor.fetchone()
-        cursor.execute("SELECT * FROM questions WHERE interview_id = ?", (interview_id,))
-        questions = cursor.fetchall()
-
-        return {
-            "success": True,
-            "interview": {
-                "id": updated_interview["id"],
-                "role": updated_interview["role"],
-                "level": updated_interview["level"],
-                "status": updated_interview["status"],
-                "overallScore": updated_interview["overall_score"],
-                "feedback": updated_interview["feedback"],
-                "questions": [dict(q) for q in questions]
-            }
-        }
-    finally:
-        conn.close()
-
-@app.get("/api/interview/history")
-def get_history(x_user_id: str = Header(None)):
-    if not x_user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT * FROM interviews WHERE user_id = ? ORDER BY created_at DESC", (x_user_id,))
-        rows = cursor.fetchall()
-        
-        history = []
-        for r in rows:
-            cursor.execute("SELECT * FROM questions WHERE interview_id = ?", (r["id"],))
-            questions = cursor.fetchall()
-            
-            interview_dict = {
-                "id": r["id"],
-                "role": r["role"],
-                "level": r["level"],
-                "status": r["status"],
-                "language": r["language"],
-                "overallScore": r["overall_score"],
-                "feedback": r["feedback"],
-                "createdAt": r["created_at"],
-                "questions": [dict(q) for q in questions]
-            }
-            history.append(interview_dict)
-
-        return {"success": True, "interviews": history}
-    finally:
-        conn.close()
+    logger.info(f"Finished interview {interview_id}. Overall score: {avg_score}")
+    return {"success": True, "overallScore": avg_score, "feedback": feedback}
 
 @app.get("/api/interview/{interview_id}")
 def get_interview(interview_id: str, x_user_id: str = Header(None)):
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
+    with get_db_cursor() as cursor:
         cursor.execute("SELECT * FROM interviews WHERE id = ?", (interview_id,))
-        row = cursor.fetchone()
-        if not row:
+        interview = cursor.fetchone()
+        if not interview:
             raise HTTPException(status_code=404, detail="Interview not found")
-        if row["user_id"] != x_user_id:
+        if interview["user_id"] != x_user_id:
             raise HTTPException(status_code=403, detail="Forbidden")
 
         cursor.execute("SELECT * FROM questions WHERE interview_id = ?", (interview_id,))
-        questions = cursor.fetchall()
+        questions_rows = cursor.fetchall()
+        
+        questions = []
+        for q in questions_rows:
+            questions.append({
+                "id": q["id"],
+                "questionText": q["question_text"],
+                "answerText": q["answer_text"],
+                "score": q["score"],
+                "critique": q["critique"],
+                "idealAnswer": q["ideal_answer"]
+            })
 
         return {
             "success": True,
             "interview": {
-                "id": row["id"],
-                "role": row["role"],
-                "level": row["level"],
-                "status": row["status"],
-                "language": row["language"],
-                "overallScore": row["overall_score"],
-                "feedback": row["feedback"],
-                "createdAt": row["created_at"],
-                "questions": [
-                    {
-                        "id": q["id"],
-                        "questionText": q["question_text"],
-                        "answerText": q["answer_text"],
-                        "score": q["score"],
-                        "critique": q["critique"],
-                        "idealAnswer": q["ideal_answer"]
-                    }
-                    for q in questions
-                ]
+                "id": interview["id"],
+                "role": interview["role"],
+                "level": interview["level"],
+                "language": interview["language"],
+                "status": interview["status"],
+                "overallScore": interview["overall_score"],
+                "feedback": interview["feedback"],
+                "createdAt": interview["created_at"],
+                "questions": questions
             }
         }
-    finally:
-        conn.close()
 
-@app.post("/api/internal/dev/seed")
-def seed_interviews(data: SeedSchema):
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("DELETE FROM interviews WHERE user_id = ?", (data.userId,))
+@app.get("/api/interview/history")
+def get_history(x_user_id: str = Header(None)):
+    if not x_user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT * FROM interviews WHERE user_id = ? ORDER BY created_at DESC", (x_user_id,))
+        interviews_rows = cursor.fetchall()
         
-        now = datetime.now()
-        two_days_ago = (now - timedelta(days=2)).isoformat()
-        one_day_ago = (now - timedelta(days=1)).isoformat()
+        history = []
+        for i in interviews_rows:
+            cursor.execute("SELECT * FROM questions WHERE interview_id = ?", (i["id"],))
+            questions_rows = cursor.fetchall()
+            
+            questions = []
+            for q in questions_rows:
+                questions.append({
+                    "id": q["id"],
+                    "questionText": q["question_text"],
+                    "answerText": q["answer_text"],
+                    "score": q["score"],
+                    "critique": q["critique"],
+                    "idealAnswer": q["ideal_answer"]
+                })
 
-        # Seed Interview 1
-        int1_id = str(uuid.uuid4())
-        cursor.execute(
-            "INSERT INTO interviews (id, user_id, role, level, status, overall_score, feedback, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (int1_id, data.userId, "Frontend Engineer", "Mid", "COMPLETED", 78, "Solid React developer skillset. Strong conceptual awareness of React DOM rendering and block bindings.", two_days_ago)
-        )
-        
-        cursor.execute(
-            "INSERT INTO questions (id, interview_id, question_text, answer_text, score, critique, ideal_answer) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), int1_id, "What is the Virtual DOM and how does React use it to render pages?", 
-             "Virtual DOM is a copy of real DOM in memory. When state changes, react compares the virtual tree with old one, this is called diffing, and then updates only changed nodes in real dom.",
-             82, "Excellent response! You explained the concept clearly, covering the diffing phase and reconciliation.",
-             "The Virtual DOM is a lightweight JavaScript representation of the real DOM. When state changes, React updates this virtual tree, compares it with the previous snapshot (diffing algorithm), and bats updates to make minimal modifications to the real DOM (reconciliation).")
-        )
-        cursor.execute(
-            "INSERT INTO questions (id, interview_id, question_text, answer_text, score, critique, ideal_answer) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), int1_id, "Explain the difference between state and props in React.",
-             "Props are parameters passed to component. State is internal data that component can change. Props are read only, state is mutable.",
-             74, "Good solid answer. You hit the main points but could be slightly more structured. To improve, you could explicitly mention that state updates trigger component re-renders.",
-             "Props are read-only configuration parameters passed down from a parent component, making components reusable. State is a private, mutable data structure managed internally within a component that triggers a re-render when updated via state setters.")
-        )
+            history.append({
+                "id": i["id"],
+                "role": i["role"],
+                "level": i["level"],
+                "language": i["language"],
+                "status": i["status"],
+                "overallScore": i["overall_score"],
+                "feedback": i["feedback"],
+                "createdAt": i["created_at"],
+                "questions": questions
+            })
 
-        # Seed Interview 2
-        int2_id = str(uuid.uuid4())
-        cursor.execute(
-            "INSERT INTO interviews (id, user_id, role, level, status, overall_score, feedback, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (int2_id, data.userId, "Backend Engineer", "Senior", "COMPLETED", 88, "Excellent performance! Demonstrates clear senior-level understanding of database indices, write trade-offs, and security mitigation for JSON Web Tokens.", one_day_ago)
-        )
-        
-        cursor.execute(
-            "INSERT INTO questions (id, interview_id, question_text, answer_text, score, critique, ideal_answer) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), int2_id, "Explain the concept of database indexing and its trade-offs.",
-             "Index makes reads faster. It uses B-Tree data structures. The trade-off is writes get slower because index has to be updated on inserts, and it uses more disk space.",
-             92, "Excellent response! You explained the concepts clearly, covering key technical requirements (B-Tree, read acceleration vs write cost).",
-             "An index is a data structure (like a B-Tree) that improves data retrieval speed on specific columns in a database table. The trade-off is that indexes consume additional storage space and slow down write operations (INSERT, UPDATE, DELETE) because the index must be updated.")
-        )
-
-        conn.commit()
-        return {"success": True}
-    finally:
-        conn.close()
+        return {"success": True, "history": history}
 
 if __name__ == "__main__":
     import uvicorn
