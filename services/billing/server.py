@@ -4,6 +4,7 @@ import uuid
 import requests
 import logging
 import time
+import contextvars
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from fastapi import FastAPI, HTTPException, Header, status, Request
@@ -15,14 +16,26 @@ from urllib3.util import Retry
 import io
 import csv
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] (%(name)s) %(message)s")
+# --- DISTRIBUTED TRACING (GOOGLE DAPPER PATTERN) ---
+correlation_id_ctx = contextvars.ContextVar("correlation_id", default="-")
+
+class CorrelationFilter(logging.Filter):
+    def filter(self, record):
+        record.correlation_id = correlation_id_ctx.get()
+        return True
+
+# Setup logging with correlation filter
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] [TraceID: %(correlation_id)s] (%(name)s) %(message)s"))
+handler.addFilter(CorrelationFilter())
+
+logging.basicConfig(level=logging.INFO, handlers=[handler])
 logger = logging.getLogger("billing-service")
 
 app = FastAPI(
-    title="TalkPrep Billing Service",
-    description="Secure checkouts, Stripe webhook receivers, and MRR auditing tools.",
-    version="2.0.0"
+    title="TalkPrep Billing Service (Google Tech Grade)",
+    description="Secure checkouts and business metrics auditor with Dapper tracing.",
+    version="3.0.0"
 )
 
 # CORS
@@ -38,7 +51,6 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "billing.db")
 AUTH_SERVICE_URL = "http://localhost:3010"
 
 # --- DATABASE MIGRATIONS ENGINE ---
-
 @contextmanager
 def get_db_cursor():
     conn = sqlite3.connect(DB_PATH)
@@ -69,11 +81,9 @@ def run_migrations():
         cursor.execute("SELECT MAX(version) as current_version FROM schema_migrations")
         row = cursor.fetchone()
         current_version = row["current_version"] if row and row["current_version"] is not None else 0
-        logger.info(f"Current Billing DB Schema Version: {current_version}")
 
         # Migration 1: Base Table
         if current_version < 1:
-            logger.info("Applying Migration V1: Base Transactions Table...")
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
                 id TEXT PRIMARY KEY,
@@ -89,17 +99,15 @@ def run_migrations():
 
         # Migration 2: Audit Indexes
         if current_version < 2:
-            logger.info("Applying Migration V2: Add Transactions Search Indexes...")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);")
             cursor.execute("INSERT INTO schema_migrations (version, description) VALUES (2, 'Add user and status indexes')")
 
-        logger.info("Billing database migrations verified and applied.")
+        logger.info(f"Billing database migrations applied. Current Schema Version: {max(current_version, 2)}")
 
 run_migrations()
 
 # --- HTTP RESILIENCY CLIENT ---
-
 def get_http_session(retries=3, backoff_factor=0.3):
     session = requests.Session()
     retry = Retry(
@@ -116,28 +124,23 @@ def get_http_session(retries=3, backoff_factor=0.3):
 
 http_client = get_http_session()
 
-# --- AUDIT MIDDLEWARE ---
-
+# --- TRACING MIDDLEWARE ---
 @app.middleware("http")
-async def audit_middleware(request: Request, call_next):
-    start_time = time.time()
-    method = request.method
-    path = request.url.path
+async def trace_middleware(request: Request, call_next):
+    corr_id = request.headers.get("x-correlation-id", str(uuid.uuid4()))
+    token = correlation_id_ctx.set(corr_id)
     
+    start_time = time.time()
     try:
         response = await call_next(request)
         duration = time.time() - start_time
+        response.headers["x-correlation-id"] = corr_id
         response.headers["X-Billing-Process-Seconds"] = f"{duration:.4f}"
         return response
-    except Exception as e:
-        logger.error(f"Billing request failure: {method} {path} - {e}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": "Billing gateway offline."}
-        )
+    finally:
+        correlation_id_ctx.reset(token)
 
 # --- VALIDATION SCHEMAS ---
-
 class CheckoutSchema(BaseModel):
     packType: str
 
@@ -179,6 +182,8 @@ def confirm_payment(data: WebhookSchema, x_user_id: str = Header(None)):
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+    corr_id = correlation_id_ctx.get()
+
     with get_db_cursor() as cursor:
         cursor.execute("SELECT * FROM transactions WHERE id = ?", (data.sessionId,))
         tx = cursor.fetchone()
@@ -191,24 +196,24 @@ def confirm_payment(data: WebhookSchema, x_user_id: str = Header(None)):
             raise HTTPException(status_code=400, detail="Transaction already processed")
 
         if data.status == "SUCCESS":
-            # Upgrade user downstream in Auth service
+            # Forward correlation ID downstream to Auth service
             try:
                 upgrade_res = http_client.post(
                     f"{AUTH_SERVICE_URL}/api/internal/users/{tx['user_id']}/upgrade",
+                    headers={"x-correlation-id": corr_id},
                     json={"type": tx["type"], "credits": tx["credits"]},
                     timeout=5
                 )
                 if upgrade_res.status_code != 200:
-                    raise HTTPException(status_code=500, detail="Failed to upgrade user downstream in Auth service")
+                    raise HTTPException(status_code=500, detail="Failed to upgrade user downstream")
             except requests.exceptions.RequestException:
                 raise HTTPException(status_code=502, detail="Auth service unreachable")
 
             cursor.execute("UPDATE transactions SET status = 'SUCCESS' WHERE id = ?", (data.sessionId,))
-            logger.info(f"Payment success, user {tx['user_id']} credited.")
+            logger.info(f"Payment success. Credited user {tx['user_id']}")
             return {"success": True, "message": "Payment validated and processed"}
         else:
             cursor.execute("UPDATE transactions SET status = 'FAILED' WHERE id = ?", (data.sessionId,))
-            logger.info(f"Payment failed for session: {data.sessionId}")
             return {"success": False, "message": "Payment failed"}
 
 @app.post("/api/billing/cancel")
@@ -216,15 +221,18 @@ def cancel_subscription(x_user_id: str = Header(None)):
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+    corr_id = correlation_id_ctx.get()
+
     try:
         downgrade_res = http_client.post(
             f"{AUTH_SERVICE_URL}/api/internal/users/{x_user_id}/downgrade",
+            headers={"x-correlation-id": corr_id},
             timeout=5
         )
         if downgrade_res.status_code != 200:
             raise HTTPException(status_code=500, detail="Failed to cancel subscription downstream")
         auth_data = downgrade_res.json()
-        logger.info(f"Downgraded subscription for user: {x_user_id}")
+        logger.info(f"Cancelled subscription for user: {x_user_id}")
         return {"success": True, "user": auth_data["user"]}
     except requests.exceptions.RequestException:
         raise HTTPException(status_code=502, detail="Auth service unreachable")
@@ -268,33 +276,28 @@ def seed_billing(data: SeedSchema):
             (str(uuid.uuid4()), data.userId, 29.0, 9999, "SUBSCRIPTION", "SUCCESS", one_day_ago)
         )
 
-        logger.info(f"Seeded mock billing logs for user: {data.userId}")
-        return {"success": True}
+    logger.info(f"Seeded payment transactions for user: {data.userId}")
+    return {"success": True}
 
 # --- BUSINESS METRICS & AUDIT EXPORTS ---
-
 @app.get("/api/internal/admin/metrics")
 def get_business_metrics(x_admin_token: str = Header(None)):
     if x_admin_token != "internal-admin-bypass-token":
         raise HTTPException(status_code=403, detail="Forbidden action.")
 
     with get_db_cursor() as cursor:
-        # 1. Total revenue
         cursor.execute("SELECT SUM(amount) as total_rev FROM transactions WHERE status = 'SUCCESS'")
         total_rev = cursor.fetchone()["total_rev"] or 0.0
         
-        # 2. Total successful vs failed checkouts
         cursor.execute("SELECT COUNT(id) as success_count FROM transactions WHERE status = 'SUCCESS'")
         success_count = cursor.fetchone()["success_count"] or 0
         
         cursor.execute("SELECT COUNT(id) as failed_count FROM transactions WHERE status = 'FAILED'")
         failed_count = cursor.fetchone()["failed_count"] or 0
         
-        # 3. Monthly Recurring Revenue (MRR) - subscriptions
         cursor.execute("SELECT SUM(amount) as mrr FROM transactions WHERE status = 'SUCCESS' AND type = 'SUBSCRIPTION'")
         mrr = cursor.fetchone()["mrr"] or 0.0
 
-        # Calculate rate
         total_attempts = success_count + failed_count
         conversion_rate = round((success_count / total_attempts) * 100, 2) if total_attempts > 0 else 100.0
 

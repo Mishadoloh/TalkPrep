@@ -4,6 +4,8 @@ import hashlib
 import binascii
 import logging
 import time
+import uuid
+import contextvars
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from fastapi import FastAPI, HTTPException, status, Request, Header
@@ -12,15 +14,30 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field, validator
 import io
 import csv
+import re
+import threading
+from collections import defaultdict
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] (%(name)s) %(message)s")
+# --- DISTRIBUTED TRACING (GOOGLE DAPPER PATTERN) ---
+correlation_id_ctx = contextvars.ContextVar("correlation_id", default="-")
+
+class CorrelationFilter(logging.Filter):
+    def filter(self, record):
+        record.correlation_id = correlation_id_ctx.get()
+        return True
+
+# Setup logging with correlation filter
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] [TraceID: %(correlation_id)s] (%(name)s) %(message)s"))
+handler.addFilter(CorrelationFilter())
+
+logging.basicConfig(level=logging.INFO, handlers=[handler])
 logger = logging.getLogger("auth-service")
 
 app = FastAPI(
-    title="TalkPrep Auth Service",
-    description="Enterprise-grade authentication microservice with migrations, audit logs, and brute-force protection.",
-    version="2.0.0"
+    title="TalkPrep Auth Service (Google Tech Grade)",
+    description="Auth microservice with Dapper distributed tracing and Token Bucket rate limiting.",
+    version="3.0.0"
 )
 
 # CORS
@@ -36,8 +53,35 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "users.db")
 MAX_LOGIN_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
 
-# --- DATABASE MIGRATIONS ENGINE ---
+# --- GOOGLE-STYLE TOKEN BUCKET RATE LIMITER ---
+class TokenBucketLimiter:
+    def __init__(self, capacity: int, refill_rate: float):
+        self.capacity = capacity
+        self.refill_rate = refill_rate  # Tokens refilled per second
+        self.buckets = defaultdict(lambda: (capacity, time.time()))
+        self.lock = threading.Lock()
 
+    def allow_request(self, key: str) -> bool:
+        with self.lock:
+            tokens, last_refill = self.buckets[key]
+            now = time.time()
+            
+            # Calculate refilled tokens based on elapsed time
+            elapsed = now - last_refill
+            refilled = elapsed * self.refill_rate
+            tokens = min(self.capacity, tokens + refilled)
+            
+            if tokens >= 1:
+                self.buckets[key] = (tokens - 1, now)
+                return True
+            else:
+                self.buckets[key] = (tokens, now)
+                return False
+
+# Limit to 5 requests per 10 seconds (capacity 5, refills 0.5 per sec)
+rate_limiter = TokenBucketLimiter(capacity=5, refill_rate=0.5)
+
+# --- DATABASE MIGRATIONS ENGINE ---
 @contextmanager
 def get_db_cursor():
     conn = sqlite3.connect(DB_PATH)
@@ -55,10 +99,7 @@ def get_db_cursor():
         conn.close()
 
 def run_migrations():
-    """Initializes and updates database schema sequentially."""
     logger.info("Initializing database migrations check...")
-    
-    # Create migrations log table first
     with get_db_cursor() as cursor:
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -68,15 +109,12 @@ def run_migrations():
         );
         """)
         
-        # Check current version
         cursor.execute("SELECT MAX(version) as current_version FROM schema_migrations")
         row = cursor.fetchone()
         current_version = row["current_version"] if row and row["current_version"] is not None else 0
-        logger.info(f"Current DB Schema Version: {current_version}")
 
         # Migration 1: Base Table
         if current_version < 1:
-            logger.info("Applying Migration V1: Base User Table...")
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
@@ -93,49 +131,48 @@ def run_migrations():
 
         # Migration 2: Security Lockouts
         if current_version < 2:
-            logger.info("Applying Migration V2: Add Brute-Force Lockout Columns...")
             cursor.execute("ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER DEFAULT 0;")
             cursor.execute("ALTER TABLE users ADD COLUMN locked_until TIMESTAMP NULL;")
             cursor.execute("INSERT INTO schema_migrations (version, description) VALUES (2, 'Add security lockout columns')")
 
         # Migration 3: Audit Indexes
         if current_version < 3:
-            logger.info("Applying Migration V3: Add User Indexes...")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);")
             cursor.execute("INSERT INTO schema_migrations (version, description) VALUES (3, 'Add email search index')")
 
-        logger.info("All migrations verified and applied successfully.")
+        logger.info(f"Database migrations applied. Current Schema Version: {max(current_version, 3)}")
 
-# Run migrations at startup
 run_migrations()
 
-# --- MIDDLEWARE & SECURITY ---
-
+# --- TRACING MIDDLEWARE & RATE LIMITING MIDDLEWARE ---
 @app.middleware("http")
-async def audit_and_performance_middleware(request: Request, call_next):
-    start_time = time.time()
+async def google_tech_middleware(request: Request, call_next):
+    # 1. Tracing
+    corr_id = request.headers.get("x-correlation-id", str(uuid.uuid4()))
+    token = correlation_id_ctx.set(corr_id)
+    
+    # 2. Rate Limiting (Token Bucket)
     client_ip = request.client.host if request.client else "unknown"
-    method = request.method
-    path = request.url.path
-    
-    logger.info(f"Incoming request: {method} {path} from IP {client_ip}")
-    
+    if request.url.path in ["/api/auth/login", "/api/auth/register"]:
+        if not rate_limiter.allow_request(client_ip):
+            logger.warning(f"Rate limit exceeded for IP {client_ip} on path {request.url.path}")
+            correlation_id_ctx.reset(token)
+            return JSONResponse(
+                status_code=429,
+                content={"success": False, "error": "Too many requests. Please slow down and try again later."}
+            )
+
+    start_time = time.time()
     try:
         response = await call_next(request)
         duration = time.time() - start_time
-        logger.info(f"Completed request: {method} {path} - Status {response.status_code} in {duration:.4f}s")
+        response.headers["x-correlation-id"] = corr_id
         response.headers["X-Response-Time-Seconds"] = f"{duration:.4f}"
         return response
-    except Exception as e:
-        duration = time.time() - start_time
-        logger.error(f"Failed request: {method} {path} - Error: {e} in {duration:.4f}s", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "error": "Internal authentication subsystem failure."}
-        )
+    finally:
+        correlation_id_ctx.reset(token)
 
 # --- VALIDATION SCHEMAS ---
-
 class RegisterSchema(BaseModel):
     email: EmailStr
     username: str = Field(..., min_length=2, max_length=50)
@@ -164,7 +201,6 @@ class CreditUpdateSchema(BaseModel):
     credits: int
 
 # --- CRYPTO HELPERS ---
-
 def hash_password(password: str, salt: bytes = None) -> tuple[str, str]:
     if salt is None:
         salt = os.urandom(32)
@@ -176,7 +212,7 @@ def verify_password(password: str, salt_hex: str, hash_hex: str) -> bool:
     computed_hash, _ = hash_password(password, salt)
     return computed_hash == hash_hex
 
-# --- CONTROLLERS ---
+# --- HTTP ROUTES ---
 
 @app.post("/api/auth/register")
 def register(data: RegisterSchema):
@@ -220,22 +256,20 @@ def login(data: LoginSchema):
         if not user:
             raise HTTPException(status_code=401, detail="Invalid email or password")
 
-        # Check Account Lockout State
+        # Lockout check
         now = datetime.now()
         if user["locked_until"]:
             locked_until_dt = datetime.fromisoformat(user["locked_until"])
             if now < locked_until_dt:
                 minutes_left = int((locked_until_dt - now).total_seconds() / 60) + 1
-                logger.warning(f"Prevented login attempt on locked account: {email_clean}")
+                logger.warning(f"Login attempted on locked account: {email_clean}")
                 raise HTTPException(
                     status_code=423,
-                    detail=f"This account is temporarily locked due to failed attempts. Try again in {minutes_left} minute(s)."
+                    detail=f"Account locked. Try again in {minutes_left} minute(s)."
                 )
             else:
-                # Lockout expired, reset attempts
                 cursor.execute("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = ?", (user["id"],))
 
-        # Check Password validity
         if not verify_password(data.password, user["password_salt"], user["password_hash"]):
             failed_attempts = user["failed_login_attempts"] + 1
             if failed_attempts >= MAX_LOGIN_ATTEMPTS:
@@ -244,10 +278,10 @@ def login(data: LoginSchema):
                     "UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?",
                     (failed_attempts, lock_time, user["id"])
                 )
-                logger.warning(f"Account locked due to brute-force protection: {email_clean}")
+                logger.warning(f"Account locked: {email_clean}")
                 raise HTTPException(
                     status_code=423,
-                    detail=f"Incorrect password. Max attempts reached. Account locked for {LOCKOUT_MINUTES} minutes."
+                    detail=f"Max attempts reached. Account locked for {LOCKOUT_MINUTES} minutes."
                 )
             else:
                 cursor.execute(
@@ -260,7 +294,6 @@ def login(data: LoginSchema):
                     detail=f"Incorrect password. {attempts_left} attempt(s) remaining."
                 )
 
-        # Successful Login
         cursor.execute("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = ?", (user["id"],))
         logger.info(f"Successful login for user: {user['id']}")
 
@@ -376,10 +409,8 @@ def downgrade_user(user_id: str):
         }
 
 # --- ADMINISTRATIVE AUDIT SERVICES ---
-
 @app.get("/api/internal/admin/audit-users")
 def export_users_audit(x_admin_token: str = Header(None)):
-    # Simulated internal secure token verification
     if x_admin_token != "internal-admin-bypass-token":
         raise HTTPException(status_code=403, detail="Forbidden administrative action.")
 
@@ -408,5 +439,4 @@ def export_users_audit(x_admin_token: str = Header(None)):
 
 if __name__ == "__main__":
     import uvicorn
-    import re
     uvicorn.run(app, host="0.0.0.0", port=3010)
