@@ -222,7 +222,7 @@ class RegisterSchema(BaseModel):
         return v
 
 class LoginSchema(BaseModel):
-    email: EmailStr
+    loginIdentifier: str
     password: str
 
 class CreditUpdateSchema(BaseModel):
@@ -305,10 +305,14 @@ def register(data: RegisterSchema):
 
 @app.post("/api/auth/login")
 def login(data: LoginSchema):
-    email_clean = data.email.lower().strip()
+    identifier_clean = data.loginIdentifier.lower().strip()
 
     with get_db_cursor() as cursor:
-        cursor.execute("SELECT * FROM users WHERE email = ?", (email_clean,))
+        if "@" in identifier_clean:
+            cursor.execute("SELECT * FROM users WHERE email = ?", (identifier_clean,))
+        else:
+            cursor.execute("SELECT * FROM users WHERE username = ?", (identifier_clean,))
+            
         user = cursor.fetchone()
         if not user:
             raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -319,7 +323,7 @@ def login(data: LoginSchema):
             locked_until_dt = datetime.fromisoformat(user["locked_until"])
             if now < locked_until_dt:
                 minutes_left = int((locked_until_dt - now).total_seconds() / 60) + 1
-                logger.warning(f"Login attempted on locked account: {email_clean}")
+                logger.warning(f"Login attempted on locked account: {identifier_clean}")
                 raise HTTPException(
                     status_code=423,
                     detail=f"Account locked. Try again in {minutes_left} minute(s)."
@@ -335,7 +339,7 @@ def login(data: LoginSchema):
                     "UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?",
                     (failed_attempts, lock_time, user["id"])
                 )
-                logger.warning(f"Account locked: {email_clean}")
+                logger.warning(f"Account locked: {identifier_clean}")
                 raise HTTPException(
                     status_code=423,
                     detail=f"Max attempts reached. Account locked for {LOCKOUT_MINUTES} minutes."
