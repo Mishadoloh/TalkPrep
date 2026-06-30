@@ -112,7 +112,9 @@ export default function RegisterPage() {
                 type="password"
                 id="password"
                 className="form-input"
-                placeholder="Min 8 chars, 1 uppercase, 1 digit, 1 symbol"
+                placeholder="6 digits (e.g. 123456)"
+                pattern="[0-9]*"
+                inputMode="numeric"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required

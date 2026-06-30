@@ -215,18 +215,12 @@ async def google_tech_middleware(request: Request, call_next):
 class RegisterSchema(BaseModel):
     email: EmailStr
     username: str = Field(..., min_length=2, max_length=50)
-    password: str = Field(..., min_length=8)
+    password: str = Field(..., min_length=6)
 
     @validator("password")
     def validate_password_strength(cls, v):
-        if not any(c.isdigit() for c in v):
-            raise ValueError("Password must contain at least one digit.")
-        if not any(c.isupper() for c in v):
-            raise ValueError("Password must contain at least one uppercase letter.")
-        if not any(c.islower() for c in v):
-            raise ValueError("Password must contain at least one lowercase letter.")
-        if not any(c in "!@#$%^&*()-_=+[]{}|;:',.<>?/~`" for c in v):
-            raise ValueError("Password must contain at least one special character.")
+        if not v.isdigit():
+            raise ValueError("Password must contain only digits.")
         return v
 
     @validator("username")
