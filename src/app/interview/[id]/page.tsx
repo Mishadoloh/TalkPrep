@@ -16,6 +16,7 @@ import {
   ArrowLeft,
   CheckCircle
 } from "lucide-react";
+import { playBeepSound } from "@/lib/audio-effects";
 
 interface Question {
   id: string;
@@ -190,6 +191,7 @@ export default function InterviewTerminalPage() {
     recognition.onstart = () => {
       setIsListening(true);
       setSpokenTranscript("Listening... Speak your answer now.");
+      playBeepSound();
     };
 
     recognition.onresult = (event: any) => {

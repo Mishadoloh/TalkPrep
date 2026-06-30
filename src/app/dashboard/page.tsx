@@ -57,6 +57,7 @@ export default function DashboardPage() {
   const [authLoading, setAuthLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState(true);
   const [locale, setLocale] = useState<Locale>("en-US");
+  const [hoveredBarIndex, setHoveredBarIndex] = useState<number | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem("talkprep_locale") as Locale;
@@ -653,9 +654,12 @@ export default function DashboardPage() {
 
                       {[...completedInterviews].reverse().slice(0, 5).map((item, idx) => {
                         const score = item.overallScore || 0;
+                        const isHovered = hoveredBarIndex === idx;
                         return (
                           <div
                             key={item.id}
+                            onMouseEnter={() => setHoveredBarIndex(idx)}
+                            onMouseLeave={() => setHoveredBarIndex(null)}
                             style={{
                               display: "flex",
                               flexDirection: "column",
@@ -664,31 +668,61 @@ export default function DashboardPage() {
                               justifyContent: "flex-end",
                               zIndex: 1,
                               width: "60px",
+                              position: "relative",
+                              cursor: "pointer"
                             }}
                           >
-                            <span style={{ fontSize: "0.8rem", color: "var(--color-secondary)", fontWeight: "bold", marginBottom: "6px", fontFamily: "var(--font-mono)" }}>
+                            {isHovered && (
+                              <div style={{
+                                position: "absolute",
+                                bottom: `${score * 1.5 + 40}px`,
+                                background: "rgba(17, 15, 24, 0.95)",
+                                border: "1px solid var(--border-glow)",
+                                padding: "8px 12px",
+                                borderRadius: "6px",
+                                fontSize: "0.75rem",
+                                color: "#fff",
+                                whiteSpace: "nowrap",
+                                boxShadow: "0 4px 15px rgba(0,0,0,0.5)",
+                                zIndex: 10,
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: "4px",
+                                pointerEvents: "none"
+                              }}>
+                                <strong style={{ color: "var(--color-secondary)" }}>{item.role}</strong>
+                                <span style={{ color: "var(--color-text-secondary)" }}>Level: {item.level}</span>
+                                <span style={{ color: "var(--color-success)" }}>Score: {score}%</span>
+                              </div>
+                            )}
+                            <span style={{ fontSize: "0.8rem", color: isHovered ? "var(--color-secondary-hover)" : "var(--color-secondary)", fontWeight: "bold", marginBottom: "6px", fontFamily: "var(--font-mono)", transition: "color var(--transition-fast)" }}>
                               {score}%
                             </span>
                             <div
                               style={{
                                 width: "32px",
-                                height: `${score * 1.5}px`, // Map 100% to 150px
-                                background: "linear-gradient(to top, var(--color-primary) 0%, var(--color-secondary) 100%)",
+                                height: `${score * 1.5}px`,
+                                background: isHovered 
+                                  ? "linear-gradient(to top, var(--color-primary-hover) 0%, var(--color-secondary-hover) 100%)" 
+                                  : "linear-gradient(to top, var(--color-primary) 0%, var(--color-secondary) 100%)",
                                 borderRadius: "4px 4px 0 0",
-                                boxShadow: "var(--shadow-glow-cyan)",
-                                transition: "height 0.8s ease",
+                                boxShadow: isHovered ? "0 0 15px var(--color-secondary-glow)" : "var(--shadow-glow-cyan)",
+                                transition: "height 0.8s ease, background 0.2s, box-shadow 0.2s, transform 0.2s",
+                                transform: isHovered ? "scaleX(1.15)" : "scaleX(1)",
+                                transformOrigin: "bottom center"
                               }}
                             ></div>
                             <span
                               style={{
                                 fontSize: "0.7rem",
-                                color: "var(--color-text-muted)",
+                                color: isHovered ? "var(--color-text-primary)" : "var(--color-text-muted)",
                                 marginTop: "8px",
                                 textAlign: "center",
                                 whiteSpace: "nowrap",
                                 overflow: "hidden",
                                 textOverflow: "ellipsis",
                                 width: "60px",
+                                transition: "color var(--transition-fast)"
                               }}
                               title={item.role}
                             >

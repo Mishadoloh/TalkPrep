@@ -6,6 +6,7 @@ import Link from "next/link";
 import BackgroundBlobs from "@/components/BackgroundBlobs";
 import { CreditCard, ShieldCheck, ArrowLeft, Loader2, Sparkles, CheckCircle } from "lucide-react";
 import confetti from "canvas-confetti";
+import { playSuccessSound } from "@/lib/audio-effects";
 
 function CheckoutContent() {
   const router = useRouter();
@@ -90,6 +91,7 @@ function CheckoutContent() {
 
         if (res.ok && data.success) {
           setPaymentSuccess(true);
+          playSuccessSound();
           // Trigger confetti!
           confetti({
             particleCount: 150,

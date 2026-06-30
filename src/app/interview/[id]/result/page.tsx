@@ -18,6 +18,7 @@ import {
   Volume2,
   Sparkles
 } from "lucide-react";
+import { playSuccessSound } from "@/lib/audio-effects";
 
 interface Question {
   id: string;
@@ -56,6 +57,7 @@ export default function ResultPage() {
         const data = await res.json();
         if (res.ok && data.success) {
           setInterview(data.interview);
+          playSuccessSound();
         } else {
           setError(data.error || "Failed to load scorecard details.");
         }
