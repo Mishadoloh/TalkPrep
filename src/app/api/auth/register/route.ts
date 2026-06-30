@@ -16,7 +16,21 @@ export async function POST(req: Request) {
     const data = await response.json();
 
     if (!response.ok) {
-      return NextResponse.json({ error: data.error || "Registration failed" }, { status: response.status });
+      let errorMessage = "Registration failed";
+      if (response.status === 422 && data.detail) {
+        if (Array.isArray(data.detail)) {
+          errorMessage = data.detail.map((err: any) => {
+            const field = err.loc && err.loc.length > 1 ? err.loc[1] : "";
+            const msg = err.msg || "";
+            return field ? `${field}: ${msg}` : msg;
+          }).join(". ");
+        } else if (typeof data.detail === "string") {
+          errorMessage = data.detail;
+        }
+      } else {
+        errorMessage = data.error || data.detail || "Registration failed";
+      }
+      return NextResponse.json({ error: errorMessage }, { status: response.status });
     }
 
     // Set cookie session at the gateway using User details returned from the microservice
