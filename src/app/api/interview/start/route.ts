@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 
-const AI_SERVICE_URL = "http://localhost:3020";
+import { AI_SERVICE_URL } from "@/lib/config";
 
 export async function POST(req: Request) {
   try {

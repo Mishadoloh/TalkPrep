@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSession } from "@/lib/auth";
 
-const AUTH_SERVICE_URL = "http://localhost:3010";
+import { AUTH_SERVICE_URL } from "@/lib/config";
 
 export async function POST(req: Request) {
   try {

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 
-const BILLING_SERVICE_URL = "http://localhost:3030";
+import { BILLING_SERVICE_URL } from "@/lib/config";
 
 export async function GET(
   req: Request,

@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 
-const AUTH_SERVICE_URL = "http://localhost:3010";
-const AI_SERVICE_URL = "http://localhost:3020";
-const BILLING_SERVICE_URL = "http://localhost:3030";
+import { AUTH_SERVICE_URL, AI_SERVICE_URL, BILLING_SERVICE_URL } from "@/lib/config";
 
 export async function POST() {
   try {
