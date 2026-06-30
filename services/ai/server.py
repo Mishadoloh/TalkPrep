@@ -2,6 +2,7 @@ import os
 import sqlite3
 import uuid
 import logging
+import time
 import requests
 import re
 from datetime import datetime
@@ -15,10 +16,14 @@ from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] (%(name)s) %(message)s")
 logger = logging.getLogger("ai-service")
 
-app = FastAPI(title="TalkPrep AI Service (Python Optimized)")
+app = FastAPI(
+    title="TalkPrep AI Service",
+    description="Speech analytics, grading, and mock interview terminal manager.",
+    version="2.0.0"
+)
 
 # CORS
 app.add_middleware(
@@ -53,7 +58,8 @@ FILLER_PATTERNS = {
     ]
 }
 
-# Database Context Manager with WAL mode
+# --- DATABASE MIGRATIONS ENGINE ---
+
 @contextmanager
 def get_db_cursor():
     conn = sqlite3.connect(DB_PATH)
@@ -65,12 +71,71 @@ def get_db_cursor():
         conn.commit()
     except Exception as e:
         conn.rollback()
-        logger.error(f"AI Database transaction failed, rolled back: {e}")
+        logger.error(f"DB error: {e}", exc_info=True)
         raise e
     finally:
         conn.close()
 
-# Safe HTTP client with Exponential Backoff Retries for internal networking
+def run_migrations():
+    logger.info("Initializing AI database migrations check...")
+    with get_db_cursor() as cursor:
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            description TEXT
+        );
+        """)
+        
+        cursor.execute("SELECT MAX(version) as current_version FROM schema_migrations")
+        row = cursor.fetchone()
+        current_version = row["current_version"] if row and row["current_version"] is not None else 0
+        logger.info(f"Current AI DB Schema Version: {current_version}")
+
+        # Migration 1: Base Tables
+        if current_version < 1:
+            logger.info("Applying Migration V1: Base Interview and Question Tables...")
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS interviews (
+                id TEXT PRIMARY KEY,
+                user_id TEXT,
+                role TEXT,
+                level TEXT,
+                language TEXT,
+                status TEXT,
+                overall_score INTEGER,
+                feedback TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS questions (
+                id TEXT PRIMARY KEY,
+                interview_id TEXT,
+                question_text TEXT,
+                answer_text TEXT,
+                score INTEGER,
+                critique TEXT,
+                ideal_answer TEXT,
+                FOREIGN KEY(interview_id) REFERENCES interviews(id)
+            );
+            """)
+            cursor.execute("INSERT INTO schema_migrations (version, description) VALUES (1, 'Create base schema tables')")
+
+        # Migration 2: Audits and Metrics columns
+        if current_version < 2:
+            logger.info("Applying Migration V2: Add Lexical Speech Metrics Columns...")
+            cursor.execute("ALTER TABLE questions ADD COLUMN words_per_minute REAL NULL;")
+            cursor.execute("ALTER TABLE questions ADD COLUMN lexical_diversity REAL NULL;")
+            cursor.execute("ALTER TABLE questions ADD COLUMN filler_count INTEGER NULL;")
+            cursor.execute("INSERT INTO schema_migrations (version, description) VALUES (2, 'Add lexical metrics columns')")
+
+        logger.info("AI database migrations verified and applied.")
+
+run_migrations()
+
+# --- HTTP RESILIENCY CLIENT ---
+
 def get_http_session(retries=3, backoff_factor=0.3):
     session = requests.Session()
     retry = Retry(
@@ -87,134 +152,46 @@ def get_http_session(retries=3, backoff_factor=0.3):
 
 http_client = get_http_session()
 
-def init_db():
-    with get_db_cursor() as cursor:
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS interviews (
-            id TEXT PRIMARY KEY,
-            user_id TEXT,
-            role TEXT,
-            level TEXT,
-            language TEXT,
-            status TEXT,
-            overall_score INTEGER,
-            feedback TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """)
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS questions (
-            id TEXT PRIMARY KEY,
-            interview_id TEXT,
-            question_text TEXT,
-            answer_text TEXT,
-            score INTEGER,
-            critique TEXT,
-            ideal_answer TEXT,
-            FOREIGN KEY(interview_id) REFERENCES interviews(id)
-        );
-        """)
-        logger.info("AI Database structure validated.")
+# --- AUDIT MIDDLEWARE ---
 
-init_db()
-
-# Global Error Handler
-@app.exception_handler(Exception)
-def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"AI Service error on {request.url.path}: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={"success": False, "error": "AI service processing failed."}
-    )
-
-# Pydantic schemas
-class StartInterviewSchema(BaseModel):
-    role: str = Field(..., min_length=2)
-    level: str
-    language: str
-
-class AnswerSchema(BaseModel):
-    questionId: str
-    answerText: str
-
-# Local fallback grading calculator
-def calculate_local_score(answer: str, reference: str, lang: str) -> tuple[int, str]:
-    if not answer or len(answer.strip()) < 5:
-        return 0, "No spoken answer provided or answer is too short to evaluate."
-
-    # Multi-language Filler Word Detection
-    fillers = FILLER_PATTERNS.get(lang, FILLER_PATTERNS["en-US"])
-    filler_count = 0
-    for pattern in fillers:
-        filler_count += len(pattern.findall(answer))
-    
-    # Sound fillers
-    filler_count += len(re.findall(r"\b[ea]-+h+\b|\b[um]-+m+\b", answer, re.I))
-
-    # Keyword match check
-    ref_words = set(re.findall(r"\w+", reference.lower()))
-    ans_words = set(re.findall(r"\w+", answer.lower()))
-    matches = ref_words.intersection(ans_words)
-    
-    match_ratio = len(matches) / max(len(ref_words), 1)
-    base_score = int(match_ratio * 100)
-    
-    # Apply verbal filler penalty
-    penalty = min(filler_count * 5, 25)
-    final_score = max(base_score - penalty, 0)
-    
-    # Feedback feedback summary
-    critique = (
-        f"Conceptual coverage: {int(match_ratio*100)}%. "
-        f"We detected {filler_count} filler sound(s) ('uh', 'um', 'like', or local language equivalent). "
-        f"Deducted {penalty}% as pacing penalty."
-    ) if lang == "en-US" else (
-        f"Концептуальне охоплення еталону: {int(match_ratio*100)}%. "
-        f"Виявлено {filler_count} зайвих слів/звуків-паразитів. "
-        f"Знято {penalty}% як штраф за темп мовлення."
-    )
-    
-    return final_score, critique
-
-# Gemini integration helper
-def query_gemini_api(question: str, answer: str, ideal: str, lang: str) -> tuple[int, str]:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        return calculate_local_score(answer, ideal, lang)
-        
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-    
-    prompt = f"""
-    You are a technical interviewer grading candidate answers.
-    Language of the interview: {lang}
-    Technical Question: "{question}"
-    Candidate Spoken Answer: "{answer}"
-    Reference Ideal Answer: "{ideal}"
-
-    Perform a strict evaluation. Return only a raw JSON object with this exact schema:
-    {{
-      "score": <integer from 0 to 100>,
-      "critique": "<2-3 sentence technical critique explaining correctness and missing keywords>"
-    }}
-    Do not add markdown formatting or wrapper tags.
-    """
+@app.middleware("http")
+async def audit_middleware(request: Request, call_next):
+    start_time = time.time()
+    method = request.method
+    path = request.url.path
     
     try:
-        res = http_client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=8)
-        if res.status_code == 200:
-            json_data = res.json()
-            raw_text = json_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-            # Clean markdown codeblocks if AI output them
-            clean_json = re.sub(r"```json|```", "", raw_text).strip()
-            import json
-            parsed = json.loads(clean_json)
-            return int(parsed.get("score", 70)), str(parsed.get("critique", "Graded by Gemini."))
+        response = await call_next(request)
+        duration = time.time() - start_time
+        response.headers["X-Process-Time-Seconds"] = f"{duration:.4f}"
+        return response
     except Exception as e:
-        logger.warning(f"Failed to query Gemini API, falling back to local: {e}")
-        
-    return calculate_local_score(answer, ideal, lang)
+        logger.error(f"Error serving {method} {path}: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": "Internal Grading Server Error."}
+        )
 
-# Mock bank of questions
+# --- SPEECH ANALYTICS HELPERS ---
+
+def calculate_lexical_diversity(text: str) -> float:
+    """Calculates Type-Token Ratio (TTR) to assess vocabulary breadth."""
+    words = re.findall(r"\w+", text.lower())
+    if not words:
+        return 0.0
+    unique_words = set(words)
+    return round(len(unique_words) / len(words), 3)
+
+def estimate_speaking_rate(text: str, duration_seconds: float = 30.0) -> float:
+    """Estimates words spoken per minute (WPM)."""
+    words = re.findall(r"\w+", text)
+    word_count = len(words)
+    if duration_seconds <= 0:
+        return 0.0
+    return round((word_count / duration_seconds) * 60, 1)
+
+# --- HIGH-FIDELITY INTERVIEW QUESTION BANK ---
+
 MOCK_BANK = {
     "Frontend Engineer": [
         {
@@ -228,6 +205,14 @@ MOCK_BANK = {
         {
             "q": "What are React Server Components and how do they differ from SSR?",
             "ideal": "React Server Components run exclusively on the server, avoiding sending client-side JavaScript payloads. SSR turns React components into HTML on the server but still requires hydration on the client."
+        },
+        {
+            "q": "How does CSS specificity work and how is it calculated?",
+            "ideal": "CSS Specificity is a weight applied to a given CSS declaration. It is calculated based on four categories: inline styles, ID selectors, class/attribute/pseudo-class selectors, and element/pseudo-element selectors."
+        },
+        {
+            "q": "What is the event loop in JavaScript and how does it handle microtasks?",
+            "ideal": "The event loop manages execution of code, event listeners, and queued tasks. Microtasks (like Promise callbacks) have higher priority than macrotasks (like setTimeout) and are executed completely before the loop moves to the next macrotask."
         }
     ],
     "Backend Engineer": [
@@ -242,18 +227,189 @@ MOCK_BANK = {
         {
             "q": "How does Redis work as a caching layer?",
             "ideal": "Redis is an in-memory key-value database. It caches frequent query results to achieve sub-millisecond retrieval times, reducing database read load."
+        },
+        {
+            "q": "Explain the CAP theorem and its implications in distributed systems.",
+            "ideal": "CAP Theorem states that a distributed system can guarantee at most two out of three properties: Consistency (every read gets the latest write), Availability (every request gets a non-error response), and Partition Tolerance (system continues to operate despite network messages drop)."
+        },
+        {
+            "q": "What is connection pooling and why is it important?",
+            "ideal": "Connection pooling keeps a cache of database connections open instead of opening and closing a new connection on every request. This reduces connection establishment latency and database resource usage."
+        }
+    ],
+    "DevOps & Infrastructure": [
+        {
+            "q": "Explain the difference between containers and virtual machines.",
+            "ideal": "Containers share the host operating system's kernel and are lightweight, starting in seconds. Virtual machines contain a full guest OS, require a hypervisor, and consume more compute resources."
+        },
+        {
+            "q": "How does Blue-Green deployment differ from Canary deployment?",
+            "ideal": "Blue-Green keeps two identical environments active; you route all traffic from blue to green. Canary rolls out the update incrementally to a small subset of users before upgrading the whole fleet."
+        },
+        {
+            "q": "What is GitOps and how does it manage infrastructure?",
+            "ideal": "GitOps uses Git repositories as the single source of truth for infrastructure declarations. Agents (like ArgoCD) continuously reconcile the actual state with the git-defined state."
+        },
+        {
+            "q": "Explain the purpose of load balancers and the difference between L4 and L7 balancing.",
+            "ideal": "Load balancers distribute traffic across servers. L4 operates at the transport layer routing packets based on IP and port. L7 operates at the application layer routing based on HTTP headers, URLs, and cookies."
+        }
+    ],
+    "Mobile Engineer": [
+        {
+            "q": "Explain the activity lifecycle in Android.",
+            "ideal": "The Android Activity lifecycle consists of key states: onCreate, onStart, onResume (interactive), onPause (partially visible), onStop (hidden), and onDestroy (terminated)."
+        },
+        {
+            "q": "What is the difference between Swift's struct and class?",
+            "ideal": "In Swift, struct is a value type (copied on assignment) stored on the stack, while class is a reference type (shared references) stored on the heap and supports inheritance."
+        },
+        {
+            "q": "How does React Native bridge communicate with native modules?",
+            "ideal": "React Native communicates asynchronously using a JSON-RPC bridge serialization protocol. Newer versions (JSI) allow direct synchronous execution of native code."
+        }
+    ],
+    "Data Science & Machine Learning": [
+        {
+            "q": "What is overfitting and how do you prevent it?",
+            "ideal": "Overfitting happens when a model learns noise in training data. It is prevented using regularization (L1/L2), cross-validation, dropout layers, early stopping, or expanding the dataset."
+        },
+        {
+            "q": "Explain the difference between supervised and unsupervised learning.",
+            "ideal": "Supervised learning trains models on labeled inputs to predict known targets. Unsupervised learning analyzes unlabeled data to uncover hidden structures (like clustering or PCA)."
+        },
+        {
+            "q": "How does the Self-Attention mechanism work in Transformers?",
+            "ideal": "Self-attention calculates compatibility scores between words in a sequence using query, key, and value vectors, allowing the model to focus on relevant context words dynamically."
+        }
+    ],
+    "QA & Testing Automation": [
+        {
+            "q": "What is the difference between Integration Testing and Unit Testing?",
+            "ideal": "Unit testing verifies individual isolated functions or classes with mock dependencies. Integration testing verifies that multiple components, databases, and network adapters work together."
+        },
+        {
+            "q": "Explain the Page Object Pattern in Selenium/Playwright.",
+            "ideal": "The Page Object Pattern wraps web pages or UI selectors inside a class, separating locator logic from test scripts. This increases reusability and simplifies code maintenance."
         }
     ]
 }
 
-# --- HTTP ROUTES ---
+# --- GRADING HEURISTICS ---
+
+def calculate_advanced_metrics(answer: str, reference: str, lang: str) -> dict:
+    if not answer or len(answer.strip()) < 5:
+        return {
+            "score": 0,
+            "critique": "Spoken answer transcript is too brief to evaluate.",
+            "fillers": 0,
+            "lexical_diversity": 0.0,
+            "wpm": 0.0
+        }
+
+    # Count fillers using compiled regexes
+    fillers = FILLER_PATTERNS.get(lang, FILLER_PATTERNS["en-US"])
+    filler_count = 0
+    for pattern in fillers:
+        filler_count += len(pattern.findall(answer))
+    filler_count += len(re.findall(r"\b[ea]-+h+\b|\b[um]-+m+\b", answer, re.I))
+
+    # Speech metrics
+    lexical_div = calculate_lexical_diversity(answer)
+    wpm = estimate_speaking_rate(answer, duration_seconds=25.0)
+
+    # Text match metrics
+    ref_words = set(re.findall(r"\w+", reference.lower()))
+    ans_words = set(re.findall(r"\w+", answer.lower()))
+    matches = ref_words.intersection(ans_words)
+    match_ratio = len(matches) / max(len(ref_words), 1)
+    
+    base_score = int(match_ratio * 100)
+    
+    # Penalize filler habits
+    penalty = min(filler_count * 6, 30)
+    
+    # Reward lexical range
+    bonus = 10 if lexical_div > 0.6 else 0
+    
+    final_score = min(max(base_score - penalty + bonus, 0), 100)
+
+    # Detailed feedback text
+    critique = (
+        f"Conceptual match is {int(match_ratio*100)}%. "
+        f"Vocabulary diversity is {int(lexical_div*100)}%. "
+        f"Detected {filler_count} verbal filler sounds. "
+        f"Estimated speaking pace: {wpm} WPM."
+    ) if lang == "en-US" else (
+        f"Концептуальний збіг: {int(match_ratio*100)}%. "
+        f"Різноманітність словникового запасу: {int(lexical_div*100)}%. "
+        f"Виявлено {filler_count} слів-паразитів. "
+        f"Орієнтовний темп мовлення: {wpm} слів/хв."
+    )
+    
+    return {
+        "score": final_score,
+        "critique": critique,
+        "fillers": filler_count,
+        "lexical_diversity": lexical_div,
+        "wpm": wpm
+    }
+
+def query_gemini_api(question: str, answer: str, ideal: str, lang: str) -> dict:
+    api_key = os.environ.get("GEMINI_API_KEY")
+    metrics = calculate_advanced_metrics(answer, ideal, lang)
+    
+    if not api_key:
+        return metrics
+        
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    
+    prompt = f"""
+    You are an AI interviewer grading coding answers.
+    Language: {lang}
+    Technical Question: "{question}"
+    Candidate Spoken Answer: "{answer}"
+    Reference Ideal Answer: "{ideal}"
+
+    Return a strict JSON object with this schema:
+    {{
+      "score": <integer from 0 to 100>,
+      "critique": "<2-3 sentence technical critique explaining correctness and missing keywords>"
+    }}
+    Do not wrap in markdown block formatting.
+    """
+    
+    try:
+        res = http_client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=8)
+        if res.status_code == 200:
+            json_data = res.json()
+            raw_text = json_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            clean_json = re.sub(r"```json|```", "", raw_text).strip()
+            import json
+            parsed = json.loads(clean_json)
+            metrics["score"] = int(parsed.get("score", metrics["score"]))
+            metrics["critique"] = f"{parsed.get('critique', '')} ({metrics['critique']})"
+    except Exception as e:
+        logger.warning(f"Failed to query Gemini API, using heuristics: {e}")
+        
+    return metrics
+
+# --- CONTROLLERS ---
+
+class StartInterviewSchema(BaseModel):
+    role: str
+    level: str
+    language: str
+
+class AnswerSchema(BaseModel):
+    questionId: str
+    answerText: str
 
 @app.post("/api/interview/start")
 def start_interview(data: StartInterviewSchema, x_user_id: str = Header(None)):
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # Call Auth microservice with resilient retry HTTP session to verify & deduct credit
     try:
         deduct_res = http_client.post(
             f"{AUTH_SERVICE_URL}/api/internal/users/{x_user_id}/deduct-credit",
@@ -309,8 +465,8 @@ def submit_answer(interview_id: str, data: AnswerSchema, x_user_id: str = Header
         if not question:
             raise HTTPException(status_code=404, detail="Question not found")
 
-        # Grade response using Gemini/local analyzer
-        score, critique = query_gemini_api(
+        # Grade response
+        metrics = query_gemini_api(
             question["question_text"],
             data.answerText,
             question["ideal_answer"],
@@ -318,11 +474,23 @@ def submit_answer(interview_id: str, data: AnswerSchema, x_user_id: str = Header
         )
 
         cursor.execute(
-            "UPDATE questions SET answer_text = ?, score = ?, critique = ? WHERE id = ?",
-            (data.answerText, score, critique, data.questionId)
+            """
+            UPDATE questions 
+            SET answer_text = ?, score = ?, critique = ?, filler_count = ?, lexical_diversity = ?, words_per_minute = ?
+            WHERE id = ?
+            """,
+            (
+                data.answerText, 
+                metrics["score"], 
+                metrics["critique"], 
+                metrics["fillers"], 
+                metrics["lexical_diversity"], 
+                metrics["wpm"], 
+                data.questionId
+            )
         )
 
-    return {"success": True, "score": score, "critique": critique}
+    return {"success": True, "score": metrics["score"], "critique": metrics["critique"]}
 
 @app.post("/api/interview/{interview_id}/finish")
 def finish_interview(interview_id: str, x_user_id: str = Header(None)):
@@ -383,7 +551,10 @@ def get_interview(interview_id: str, x_user_id: str = Header(None)):
                 "answerText": q["answer_text"],
                 "score": q["score"],
                 "critique": q["critique"],
-                "idealAnswer": q["ideal_answer"]
+                "idealAnswer": q["ideal_answer"],
+                "fillerCount": q["filler_count"],
+                "lexicalDiversity": q["lexical_diversity"],
+                "wordsPerMinute": q["words_per_minute"]
             })
 
         return {
@@ -423,7 +594,10 @@ def get_history(x_user_id: str = Header(None)):
                     "answerText": q["answer_text"],
                     "score": q["score"],
                     "critique": q["critique"],
-                    "idealAnswer": q["ideal_answer"]
+                    "idealAnswer": q["ideal_answer"],
+                    "fillerCount": q["filler_count"],
+                    "lexicalDiversity": q["lexical_diversity"],
+                    "wordsPerMinute": q["words_per_minute"]
                 })
 
             history.append({
@@ -442,4 +616,5 @@ def get_history(x_user_id: str = Header(None)):
 
 if __name__ == "__main__":
     import uvicorn
+    import json
     uvicorn.run(app, host="0.0.0.0", port=3020)
