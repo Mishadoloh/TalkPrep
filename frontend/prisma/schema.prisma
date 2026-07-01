@@ -17,6 +17,24 @@ model User {
   createdAt        DateTime      @default(now())
   interviews       Interview[]
   transactions     Transaction[]
+  trackedJobs      TrackedJob[]
+}
+
+model TrackedJob {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company     String
+  role        String
+  logo        String?
+  logoBg      String?
+  initial     String?
+  location    String?
+  desc        String?
+  link        String?
+  status      String   @default("Список") // "Список", "Відгукнувся", "Співбесіда", "Оффер", "Відмова"
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model Interview {

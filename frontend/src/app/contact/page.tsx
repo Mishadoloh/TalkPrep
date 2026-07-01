@@ -1,8 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Header from "@/components/Header";
-import BackgroundBlobs from "@/components/BackgroundBlobs";
 import { getTranslation, Locale } from "@/lib/translations";
 import { Mail, Sparkles, Send } from "lucide-react";
 
@@ -35,25 +33,36 @@ export default function ContactPage() {
     document.querySelector('meta[name="description"]')?.setAttribute("content", getTranslation(locale, "metaDescContact"));
   }, [locale]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !email || !message) return;
     setSending(true);
 
-    // Simulate sending message to backing support service
-    setTimeout(() => {
+    try {
+      const res = await fetch("/api/contact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, message }),
+      });
+
+      if (res.ok) {
+        setSuccess(true);
+        setName("");
+        setEmail("");
+        setMessage("");
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to send message");
+      }
+    } catch (err) {
+      alert("Failed to connect to the server");
+    } finally {
       setSending(false);
-      setSuccess(true);
-      setName("");
-      setEmail("");
-      setMessage("");
-    }, 1500);
+    }
   };
 
   return (
     <>
-      <Header />
-      <BackgroundBlobs />
 
       <main className="container" style={{ flex: 1, padding: "80px 24px" }}>
         <section style={{ textAlign: "center", maxWidth: "800px", margin: "0 auto 60px" }}>

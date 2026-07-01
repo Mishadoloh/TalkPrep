@@ -1,8 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Header from "@/components/Header";
-import BackgroundBlobs from "@/components/BackgroundBlobs";
 import { getTranslation, Locale } from "@/lib/translations";
 import { Sparkles, Check, X, ShieldCheck } from "lucide-react";
 import Link from "next/link";
@@ -31,8 +29,6 @@ export default function PricingPage() {
 
   return (
     <>
-      <Header />
-      <BackgroundBlobs />
 
       <main className="container" style={{ flex: 1, padding: "80px 24px" }}>
         <section style={{ textAlign: "center", maxWidth: "800px", margin: "0 auto 60px" }}>

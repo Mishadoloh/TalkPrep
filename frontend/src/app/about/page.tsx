@@ -1,13 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Header from "@/components/Header";
-import BackgroundBlobs from "@/components/BackgroundBlobs";
 import { getTranslation, Locale } from "@/lib/translations";
 import { Sparkles, Terminal, Code, Cpu } from "lucide-react";
 
 export default function AboutPage() {
   const [locale, setLocale] = useState<Locale>("en-US");
+  const [hoveredCard, setHoveredCard] = useState<number | null>(null);
+  const [hoveredNarrative, setHoveredNarrative] = useState<number | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem("talkprep_locale") as Locale;
@@ -30,8 +30,6 @@ export default function AboutPage() {
 
   return (
     <>
-      <Header />
-      <BackgroundBlobs />
 
       <main className="container" style={{ flex: 1, padding: "80px 24px" }}>
         <section style={{ textAlign: "center", maxWidth: "800px", margin: "0 auto 60px" }}>
@@ -63,10 +61,24 @@ export default function AboutPage() {
 
         {/* Narrative columns */}
         <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "40px", marginBottom: "80px" }}>
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px" }}>
-              <Terminal size={18} style={{ color: "var(--color-secondary)" }} />
-              <h3 style={{ fontSize: "1.2rem" }}>{locale === "uk-UA" ? "Подолання психологічного бар'єру" : "Confidence in Technical Speech"}</h3>
+          <div
+            onMouseEnter={() => setHoveredNarrative(1)}
+            onMouseLeave={() => setHoveredNarrative(null)}
+            style={{
+              background: "rgba(30, 41, 59, 0.25)",
+              border: "1px solid " + (hoveredNarrative === 1 ? "rgba(124, 77, 255, 0.35)" : "rgba(255, 255, 255, 0.05)"),
+              borderRadius: "20px",
+              padding: "30px",
+              boxShadow: hoveredNarrative === 1 ? "0 16px 35px -10px rgba(124, 77, 255, 0.15)" : "0 4px 20px rgba(0, 0, 0, 0.1)",
+              transform: hoveredNarrative === 1 ? "translateY(-4px)" : "translateY(0)",
+              transition: "all 0.4s cubic-bezier(0.16, 1, 0.3, 1)"
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "36px", height: "36px", borderRadius: "10px", background: "rgba(124, 77, 255, 0.1)", border: "1px solid rgba(124, 77, 255, 0.2)" }}>
+                <Terminal size={18} style={{ color: "var(--color-secondary)" }} />
+              </div>
+              <h3 style={{ fontSize: "1.2rem", fontWeight: 600 }}>{locale === "uk-UA" ? "Подолання психологічного бар'єру" : "Confidence in Technical Speech"}</h3>
             </div>
             <p style={{ fontSize: "0.95rem", color: "var(--color-text-secondary)", lineHeight: "1.6" }}>
               {locale === "uk-UA"
@@ -75,10 +87,24 @@ export default function AboutPage() {
             </p>
           </div>
 
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px" }}>
-              <Cpu size={18} style={{ color: "var(--color-cyan)" }} />
-              <h3 style={{ fontSize: "1.2rem" }}>{locale === "uk-UA" ? "Об'єктивна оцінка навичок" : "Objective Metrics Analytics"}</h3>
+          <div
+            onMouseEnter={() => setHoveredNarrative(2)}
+            onMouseLeave={() => setHoveredNarrative(null)}
+            style={{
+              background: "rgba(30, 41, 59, 0.25)",
+              border: "1px solid " + (hoveredNarrative === 2 ? "rgba(6, 182, 212, 0.35)" : "rgba(255, 255, 255, 0.05)"),
+              borderRadius: "20px",
+              padding: "30px",
+              boxShadow: hoveredNarrative === 2 ? "0 16px 35px -10px rgba(6, 182, 212, 0.15)" : "0 4px 20px rgba(0, 0, 0, 0.1)",
+              transform: hoveredNarrative === 2 ? "translateY(-4px)" : "translateY(0)",
+              transition: "all 0.4s cubic-bezier(0.16, 1, 0.3, 1)"
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "16px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "36px", height: "36px", borderRadius: "10px", background: "rgba(6, 182, 212, 0.1)", border: "1px solid rgba(6, 182, 212, 0.2)" }}>
+                <Cpu size={18} style={{ color: "var(--color-cyan)" }} />
+              </div>
+              <h3 style={{ fontSize: "1.2rem", fontWeight: 600 }}>{locale === "uk-UA" ? "Об'єктивна оцінка навичок" : "Objective Metrics Analytics"}</h3>
             </div>
             <p style={{ fontSize: "0.95rem", color: "var(--color-text-secondary)", lineHeight: "1.6" }}>
               {locale === "uk-UA"
@@ -89,42 +115,108 @@ export default function AboutPage() {
         </section>
 
         {/* Team Section */}
-        <section>
-          <h2 style={{ textAlign: "center", fontSize: "2rem", marginBottom: "40px" }}>
+        <section style={{ position: "relative" }}>
+          <h2 style={{ textAlign: "center", fontSize: "2rem", marginBottom: "40px", fontWeight: 700 }}>
             {locale === "uk-UA" ? "Наша команда" : "Meet the Innovators"}
           </h2>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: "30px" }}>
-            {/* Team member 1 */}
-            <div className="glass-card" style={{ padding: "24px", textAlign: "center" }}>
-              <div style={{ width: "80px", height: "80px", borderRadius: "50%", background: "linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%)", margin: "0 auto 16px", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <Code size={32} style={{ color: "#fff", margin: "0 auto" }} />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "30px" }}>
+            {[
+              {
+                id: 1,
+                name: locale === "uk-UA" ? "Мацола Дмитро" : "Dmytro Matsola",
+                role: "Chief Executive Officer (CEO)",
+                photo: "/avatar_dmytro.png?v=5",
+                color: "rgba(59, 130, 246, 0.7)",
+                glowColor: "rgba(59, 130, 246, 0.25)",
+                bioUk: "Має понад 10 років досвіду управління стартапами в сфері мовленнєвих технологій та ШІ.",
+                bioEn: "Over 10 years of experience managing speech technology and conversational AI startups."
+              },
+              {
+                id: 2,
+                name: locale === "uk-UA" ? "Дьолог Михайло" : "Mykhailo Doloh",
+                role: "Founder & Lead Architect",
+                photo: "/avatar_mykhailo.png?v=4",
+                color: "rgba(168, 85, 247, 0.7)",
+                glowColor: "rgba(168, 85, 247, 0.25)",
+                bioUk: "Старший розробник, захоплюється штучним інтелектом та орієнтується в мовних технологіях.",
+                bioEn: "Senior developer obsessed with microservices, voice synthesis systems, and SQLite scaling."
+              },
+              {
+                id: 3,
+                name: locale === "uk-UA" ? "Фіцай Михайло" : "Mykhailo Fitsay",
+                role: "Lead AI Researcher",
+                photo: "/avatar_fitsay.png?v=4",
+                color: "rgba(6, 182, 212, 0.7)",
+                glowColor: "rgba(6, 182, 212, 0.25)",
+                bioUk: "Експерт з обробки природної мови, спеціалізується на архітектурі великих мовних моделей.",
+                bioEn: "Natural Language Processing expert, specializing in Large Language Model architectures."
+              },
+              {
+                id: 4,
+                name: locale === "uk-UA" ? "Бердарь Каріна" : "Karyna Berdar",
+                role: "Head of Product & UX",
+                photo: "/avatar_karyna.png?v=4",
+                color: "rgba(236, 72, 153, 0.7)",
+                glowColor: "rgba(236, 72, 153, 0.25)",
+                bioUk: "Створює інтуїтивно зрозумілі інтерфейси, орієнтовані на користувачів, та керує життєвим циклом продукту.",
+                bioEn: "Designs intuitive, user-centric interfaces and oversees the product lifecycle and feedback loops."
+              }
+            ].map(member => (
+              <div
+                key={member.id}
+                onMouseEnter={() => setHoveredCard(member.id)}
+                onMouseLeave={() => setHoveredCard(null)}
+                style={{
+                  padding: "40px 24px",
+                  textAlign: "center",
+                  background: hoveredCard === member.id ? "rgba(15, 23, 42, 0.75)" : "rgba(15, 23, 42, 0.4)",
+                  border: hoveredCard === member.id ? `1px solid ${member.color}` : "1px solid rgba(255, 255, 255, 0.08)",
+                  borderRadius: "20px",
+                  boxShadow: hoveredCard === member.id ? `0 25px 50px -12px ${member.glowColor}` : "0 8px 30px rgba(0, 0, 0, 0.2)",
+                  transform: hoveredCard === member.id ? "translateY(-8px) scale(1.02)" : "translateY(0) scale(1)",
+                  transition: "all 0.4s cubic-bezier(0.16, 1, 0.3, 1)",
+                  cursor: "default"
+                }}
+              >
+                <div
+                  style={{
+                    width: "88px",
+                    height: "88px",
+                    borderRadius: "50%",
+                    margin: "0 auto 20px",
+                    border: "2px solid rgba(255, 255, 255, 0.15)",
+                    boxShadow: hoveredCard === member.id
+                      ? `0 0 25px ${member.color}`
+                      : "0 4px 15px rgba(0, 0, 0, 0.3)",
+                    transition: "all 0.4s ease",
+                    overflow: "hidden",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: "rgba(15, 23, 42, 0.6)"
+                  }}
+                >
+                  <img
+                    src={member.photo}
+                    alt={member.name}
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      objectFit: "cover",
+                      transform: hoveredCard === member.id ? "scale(1.1)" : "scale(1)",
+                      transition: "transform 0.4s ease"
+                    }}
+                  />
+                </div>
+                <strong style={{ fontSize: "1.2rem", color: "#fff", display: "block" }}>{member.name}</strong>
+                <span style={{ fontSize: "0.85rem", color: member.color, marginTop: "4px", display: "inline-block", fontWeight: 600 }}>
+                  {member.role}
+                </span>
+                <p style={{ fontSize: "0.9rem", color: "var(--color-text-secondary)", lineHeight: "1.5", marginTop: "16px" }}>
+                  {locale === "uk-UA" ? member.bioUk : member.bioEn}
+                </p>
               </div>
-              <strong style={{ fontSize: "1.1rem" }}>{locale === "uk-UA" ? "Михайло Долохов" : "Misha Doloh"}</strong>
-              <p style={{ fontSize: "0.8rem", color: "var(--color-secondary)", marginTop: "4px", marginBottom: "12px" }}>
-                Founder & Lead Architect
-              </p>
-              <p style={{ fontSize: "0.85rem", color: "var(--color-text-secondary)", lineHeight: "1.4" }}>
-                {locale === "uk-UA"
-                  ? "Старший розробник, захоплюється штучним інтелектом та орієнтується в мовних технологіях."
-                  : "Senior developer obsessed with microservices, voice synthesis systems, and SQLite scaling."}
-              </p>
-            </div>
-
-            {/* Team member 2 */}
-            <div className="glass-card" style={{ padding: "24px", textAlign: "center" }}>
-              <div style={{ width: "80px", height: "80px", borderRadius: "50%", background: "linear-gradient(135deg, var(--color-secondary) 0%, var(--color-primary) 100%)", margin: "0 auto 16px", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <Cpu size={32} style={{ color: "#fff", margin: "0 auto" }} />
-              </div>
-              <strong style={{ fontSize: "1.1rem" }}>{locale === "uk-UA" ? "ШІ Коуч Gemini" : "Gemini AI Core"}</strong>
-              <p style={{ fontSize: "0.8rem", color: "var(--color-cyan)", marginTop: "4px", marginBottom: "12px" }}>
-                AI Recruiter & Grader
-              </p>
-              <p style={{ fontSize: "0.85rem", color: "var(--color-text-secondary)", lineHeight: "1.4" }}>
-                {locale === "uk-UA"
-                  ? "Наш віртуальний мозок, який розбирає концепції, рахує слова-паразити та дає поради."
-                  : "Virtual evaluator analyzing sentence depth, tracking speech pace, and generating ideal answer guides."}
-              </p>
-            </div>
+            ))}
           </div>
         </section>
       </main>

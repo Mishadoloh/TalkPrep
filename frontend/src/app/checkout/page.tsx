@@ -3,7 +3,6 @@
 import React, { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import BackgroundBlobs from "@/components/BackgroundBlobs";
 import { CreditCard, ShieldCheck, ArrowLeft, Loader2, Sparkles, CheckCircle } from "lucide-react";
 import confetti from "canvas-confetti";
 import { playSuccessSound } from "@/lib/audio-effects";
@@ -140,7 +139,6 @@ function CheckoutContent() {
 
   return (
     <main style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "40px 24px" }}>
-      <BackgroundBlobs />
 
       {paymentSuccess ? (
         // 1. Success Panel

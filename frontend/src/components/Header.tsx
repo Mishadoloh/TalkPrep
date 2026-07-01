@@ -103,9 +103,6 @@ export default function Header() {
             >
               <option value="en-US" style={{ background: "#110f18" }}>EN</option>
               <option value="uk-UA" style={{ background: "#110f18" }}>UA</option>
-              <option value="es-ES" style={{ background: "#110f18" }}>ES</option>
-              <option value="de-DE" style={{ background: "#110f18" }}>DE</option>
-              <option value="fr-FR" style={{ background: "#110f18" }}>FR</option>
             </select>
           </div>
 
@@ -145,7 +142,8 @@ export default function Header() {
                     {user.credits} {user.credits === 1 ? getTranslation(locale, "creditLeft") : getTranslation(locale, "creditsLeft")}
                   </span>
                 )}
-                <span
+                <Link
+                  href="/profile"
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -153,11 +151,17 @@ export default function Header() {
                     fontSize: "0.9rem",
                     color: "var(--color-text-primary)",
                     fontWeight: 600,
+                    textDecoration: "none",
+                    padding: "4px 8px",
+                    borderRadius: "var(--radius-sm)",
+                    background: "rgba(255,255,255,0.03)",
+                    border: "1px solid var(--border-color)",
+                    transition: "all 0.2s ease"
                   }}
                 >
                   <UserIcon size={14} style={{ color: "var(--color-secondary)" }} />
                   {user.username}
-                </span>
+                </Link>
                 <button
                   onClick={handleLogout}
                   className="btn btn-secondary"

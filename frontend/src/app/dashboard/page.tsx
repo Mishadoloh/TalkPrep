@@ -2,62 +2,38 @@
 
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import Header from "@/components/Header";
-import BackgroundBlobs from "@/components/BackgroundBlobs";
+import Link from "next/link";
 import {
-  Play,
-  History,
-  TrendingUp,
-  CreditCard,
-  CheckCircle,
-  Clock,
-  Sparkles,
-  ArrowUpRight,
-  ShieldCheck,
+  Flame,
   ChevronRight,
-  Frown
+  FileText,
+  TrendingUp,
+  Mic,
+  Award,
+  Calendar,
+  Briefcase,
+  Zap,
+  Sparkles,
+  ChevronLeft,
+  Lock,
+  Plus,
+  User
 } from "lucide-react";
-import { SUPPORTED_LANGUAGES } from "@/lib/languages";
-import { getTranslation, Locale } from "@/lib/translations";
+import { Locale } from "@/lib/translations";
 
-interface User {
+interface UserData {
   id: string;
   email: string;
   username: string;
   isPro: boolean;
   credits: number;
-  createdAt: string;
-}
-
-interface Question {
-  id: string;
-  questionText: string;
-  score: number | null;
-  critique: string | null;
-  answerText: string | null;
-  idealAnswer: string;
-}
-
-interface Interview {
-  id: string;
-  role: string;
-  level: string;
-  status: string;
-  overallScore: number | null;
-  feedback: string | null;
-  createdAt: string;
-  questions: Question[];
 }
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<"practice" | "history" | "analytics" | "billing">("practice");
-  const [user, setUser] = useState<User | null>(null);
-  const [interviews, setInterviews] = useState<Interview[]>([]);
+  const [user, setUser] = useState<UserData | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [dataLoading, setDataLoading] = useState(true);
-  const [locale, setLocale] = useState<Locale>("en-US");
-  const [hoveredBarIndex, setHoveredBarIndex] = useState<number | null>(null);
+  const [locale, setLocale] = useState<Locale>("uk-UA");
 
   useEffect(() => {
     const saved = localStorage.getItem("talkprep_locale") as Locale;
@@ -72,794 +48,371 @@ export default function DashboardPage() {
     return () => window.removeEventListener("locale-changed", handleLocale);
   }, []);
 
-  // Form State
-  const [role, setRole] = useState("Frontend Engineer");
-  const [level, setLevel] = useState("Mid");
-  const [language, setLanguage] = useState("en-US");
-  const [startingSession, setStartingSession] = useState(false);
-  const [formError, setFormError] = useState("");
-
-  // Billing Actions State
-  const [billingLoading, setBillingLoading] = useState(false);
-  const [seeding, setSeeding] = useState(false);
-
-  const fetchSession = async () => {
-    try {
-      const res = await fetch("/api/auth/user");
-      if (res.ok) {
-        const data = await res.json();
-        if (data.authenticated) {
-          setUser(data.user);
-          return data.user.id;
-        } else {
-          router.push("/login");
-        }
-      } else {
-        router.push("/login");
-      }
-    } catch (e) {
-      router.push("/login");
-    } finally {
-      setAuthLoading(false);
-    }
-    return null;
-  };
-
-  const fetchHistory = async () => {
-    try {
-      const res = await fetch("/api/interview/history");
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success) {
-          setInterviews(data.interviews);
-        }
-      }
-    } catch (e) {
-      console.error("Failed to load interview history:", e);
-    } finally {
-      setDataLoading(false);
-    }
-  };
-
   useEffect(() => {
-    fetchSession().then((userId) => {
-      if (userId) {
-        fetchHistory();
+    const fetchSession = async () => {
+      try {
+        const res = await fetch("/api/auth/user");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.authenticated) {
+            setUser(data.user);
+          } else {
+            router.push("/login");
+          }
+        }
+      } catch (e) {
+        router.push("/login");
+      } finally {
+        setAuthLoading(false);
       }
-    });
-
-    const handleUserUpdate = () => {
-      fetchSession();
-      fetchHistory();
     };
-    window.addEventListener("user-updated", handleUserUpdate);
-    return () => window.removeEventListener("user-updated", handleUserUpdate);
-  }, []);
-
-  const handleStartInterview = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setFormError("");
-    setStartingSession(true);
-
-    try {
-      const res = await fetch("/api/interview/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role, level, language }),
-      });
-
-      const data = await res.json();
-
-      if (res.ok && data.success) {
-        window.dispatchEvent(new Event("user-updated"));
-        router.push(`/interview/${data.interviewId}`);
-      } else {
-        setFormError(data.error || "Failed to start interview. Try again.");
-      }
-    } catch (err) {
-      setFormError("A network error occurred. Please verify your connection.");
-    } finally {
-      setStartingSession(false);
-    }
-  };
-
-  const handleCheckout = async (packType: "5_CREDITS" | "PRO_MONTHLY") => {
-    setBillingLoading(true);
-    try {
-      const res = await fetch("/api/billing/checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ packType }),
-      });
-      const data = await res.json();
-      if (res.ok && data.checkoutUrl) {
-        router.push(data.checkoutUrl);
-      } else {
-        alert(data.error || "Billing error occurred.");
-      }
-    } catch (e) {
-      alert("Failed to initiate billing session.");
-    } finally {
-      setBillingLoading(false);
-    }
-  };
-
-  const handleCancelSubscription = async () => {
-    if (!confirm("Are you sure you want to cancel your Pro membership? You will lose unlimited mock sessions immediately.")) return;
-    setBillingLoading(true);
-    try {
-      const res = await fetch("/api/billing/cancel", { method: "POST" });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        window.dispatchEvent(new Event("user-updated"));
-        alert("Subscription cancelled successfully.");
-      } else {
-        alert(data.error || "Cancellation failed.");
-      }
-    } catch (e) {
-      alert("Failed to cancel subscription.");
-    } finally {
-      setBillingLoading(false);
-    }
-  };
-
-  const handleSeedData = async () => {
-    if (!confirm("This will overwrite your current history with mock completed technical interviews and payment logs. Proceed?")) return;
-    setSeeding(true);
-    try {
-      const res = await fetch("/api/dev/seed", { method: "POST" });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        window.dispatchEvent(new Event("user-updated"));
-        alert("Database successfully populated! Refreshing statistics...");
-      } else {
-        alert(data.error || "Failed to seed database.");
-      }
-    } catch (e) {
-      alert("Network error seeding sandbox data.");
-    } finally {
-      setSeeding(false);
-    }
-  };
+    fetchSession();
+  }, [router]);
 
   if (authLoading) {
-    return (
-      <div className="flex-center" style={{ minHeight: "100vh", backgroundColor: "var(--bg-primary)" }}>
-        <div style={{ color: "var(--color-text-secondary)", fontSize: "1.2rem", fontWeight: 500 }}>
-          Authenticating session...
-        </div>
-      </div>
-    );
+    return <div className="page-content flex-center" style={{ minHeight: "100vh" }}>Завантаження...</div>;
   }
 
-  // Analytics tab computed values
-  const completedInterviews = interviews.filter((i) => i.status === "COMPLETED");
-  const averageScore =
-    completedInterviews.length > 0
-      ? Math.round(completedInterviews.reduce((acc, curr) => acc + (curr.overallScore || 0), 0) / completedInterviews.length)
-      : 0;
+  const uk = locale === "uk-UA";
+  const getGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return uk ? "Доброго ранку" : "Good morning";
+    if (hour < 18) return uk ? "Доброго дня" : "Good afternoon";
+    return uk ? "Доброго вечора" : "Good evening";
+  };
 
   return (
-    <>
-      <Header />
-      <BackgroundBlobs />
-
-      <main className="container" style={{ flex: 1, padding: "40px 24px" }}>
-        {/* User Welcome Block */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: "36px", flexWrap: "wrap", gap: "20px" }}>
-          <div>
-            <h1 style={{ fontSize: "2rem", marginBottom: "6px" }}>{getTranslation(locale, "welcome")}, {user?.username}</h1>
-            <p style={{ color: "var(--color-text-secondary)", fontSize: "0.95rem" }}>
-              {locale === "uk-UA" ? "Практикуйте технічні співбесіди та відстежуйте свій прогрес." : "Practice mock tech sessions and track your communication scorecard."}
-            </p>
+    <div className="page-content" style={{ maxWidth: 1040, margin: "0 auto", padding: "32px 40px", paddingBottom: 100 }}>
+      
+      {/* ── 1. Greeting & Activity Card ── */}
+      <section className="glass-card" style={{ padding: "28px 32px", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+        <div>
+          <h1 style={{ fontSize: "1.7rem", fontWeight: 700, marginBottom: 8, display: "flex", alignItems: "center", gap: 10 }}>
+            {getGreeting()}, {user?.username || "Гість"} <span style={{ fontSize: "1.5rem" }}>👋</span>
+          </h1>
+          <p style={{ color: "var(--text-secondary)", marginBottom: 16 }}>
+            {uk ? "Готовий до нових перемог?" : "Ready for new wins?"}
+          </p>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(249, 115, 22, 0.1)", border: "1px solid rgba(249, 115, 22, 0.2)", padding: "4px 12px", borderRadius: "var(--radius-full)", color: "var(--color-streak)", fontSize: "0.8rem", fontWeight: 600 }}>
+            <Flame size={14} />
+            {uk ? "1 день поспіль" : "1 day streak"}
           </div>
-          <div style={{ display: "flex", gap: "10px" }}>
-            <button
-              onClick={handleSeedData}
-              className="btn btn-secondary"
-              style={{
-                padding: "8px 16px",
-                fontSize: "0.9rem",
-                border: "1px dashed var(--color-secondary)",
-                borderRadius: "var(--radius-sm)",
-              }}
-              disabled={seeding}
-            >
-              {seeding ? getTranslation(locale, "loading") : getTranslation(locale, "seedingBtn")}
-            </button>
-            
-            <span
-              style={{
-                background: "rgba(255, 255, 255, 0.03)",
-                border: "1px solid var(--border-color)",
-                padding: "8px 16px",
-                borderRadius: "var(--radius-sm)",
-                fontSize: "0.9rem",
-                fontWeight: 600,
-              }}
-            >
-              {locale === "uk-UA" ? "Мова:" : "Role practicing:"} <span style={{ color: "var(--color-secondary)" }}>{role}</span>
+        </div>
+        
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: "0.7rem", fontWeight: 700, letterSpacing: "0.08em", color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 12 }}>
+            {uk ? "Активність тижня" : "Weekly Activity"}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {["Пн","Вт","Ср","Чт","Пт","Сб","Нд"].map((day, i) => (
+              <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                <div style={{ 
+                  width: 28, height: 28, borderRadius: "50%", 
+                  background: i === 1 ? "var(--accent)" : "rgba(255,255,255,0.05)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  color: i === 1 ? "#fff" : "transparent"
+                }}>
+                  {i === 1 && <Flame size={14} />}
+                </div>
+                <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", fontWeight: 600 }}>{day}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── 2. Readiness & Pro Banner ── */}
+      <section className="glass-card" style={{ padding: "32px", marginBottom: 24 }}>
+        <div style={{ display: "flex", gap: 32, alignItems: "center", marginBottom: 24 }}>
+          {/* Circular Progress */}
+          <div style={{ position: "relative", width: 110, height: 110, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <svg viewBox="0 0 36 36" style={{ width: "100%", height: "100%", transform: "rotate(-90deg)" }}>
+              <path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="3" />
+              <path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="var(--color-text-primary)" strokeWidth="3" strokeDasharray="0, 100" />
+            </svg>
+            <div style={{ position: "absolute", fontSize: "1.8rem", fontWeight: 800, color: "var(--text-primary)" }}>
+              0<span style={{ fontSize: "1rem" }}>%</span>
+            </div>
+          </div>
+
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: "0.7rem", fontWeight: 700, letterSpacing: "0.08em", color: "var(--accent-light)", textTransform: "uppercase", marginBottom: 6 }}>
+              {uk ? "Твоя готовність" : "Your Readiness"}
+            </div>
+            <h2 style={{ fontSize: "1.4rem", fontWeight: 700, marginBottom: 16 }}>
+              {uk ? "Чудовий старт — почнімо!" : "Great start — let's go!"}
+            </h2>
+            <div style={{ fontSize: "0.85rem", color: "var(--text-secondary)", marginBottom: 12 }}>
+              {uk ? "Що підтягнути" : "What to improve"}
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="btn btn-secondary" style={{ padding: "6px 14px", fontSize: "0.8rem", gap: 6, borderRadius: "var(--radius-full)" }}>
+                <FileText size={14} /> {uk ? "Створи перше резюме" : "Create first resume"} <ChevronRight size={14} style={{ opacity: 0.5 }} />
+              </button>
+              <button className="btn btn-secondary" style={{ padding: "6px 14px", fontSize: "0.8rem", gap: 6, borderRadius: "var(--radius-full)" }}>
+                <Sparkles size={14} /> {uk ? "Підніми ATS до 70%+" : "Boost ATS to 70%+"} <ChevronRight size={14} style={{ opacity: 0.5 }} />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Pro Banner inside card */}
+        <div style={{ background: "rgba(108, 92, 231, 0.1)", border: "1px solid rgba(108, 92, 231, 0.2)", borderRadius: "var(--radius-md)", padding: "16px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+            <div style={{ width: 36, height: 36, borderRadius: "50%", background: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}>
+              <Zap size={18} />
+            </div>
+            <div>
+              <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "var(--text-primary)", marginBottom: 4 }}>
+                {uk ? "З PRO готовність росте вдвічі швидше — безліміт симуляцій і AI-розборів." : "With PRO readiness grows twice as fast — unlimited simulations."}
+              </div>
+              <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 4 }}>
+                <Sparkles size={12} style={{ color: "#f59e0b" }} />
+                {uk ? "200+ уже отримали офер з Doorora" : "200+ got offers with Doorora"}
+              </div>
+            </div>
+          </div>
+          <Link href="/pricing" className="btn btn-primary" style={{ padding: "8px 16px", borderRadius: "var(--radius-full)", fontSize: "0.85rem" }}>
+            {uk ? "Спробувати PRO" : "Try PRO"} <ChevronRight size={14} />
+          </Link>
+        </div>
+      </section>
+
+      {/* ── 3. Continue Interview & Weekly Challenge ── */}
+      <section className="glass-card" style={{ padding: "24px", marginBottom: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", background: "var(--bg-card-alt)", borderRadius: "var(--radius-md)", border: "1px solid var(--border)", marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <div style={{ width: 40, height: 40, borderRadius: "50%", background: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}>
+              <Mic size={20} />
+            </div>
+            <div>
+              <div style={{ fontSize: "1rem", fontWeight: 600, color: "var(--text-primary)", marginBottom: 2 }}>
+                {uk ? "Продовжити інтерв'ю" : "Continue interview"}
+              </div>
+              <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>
+                {uk ? "Ти зупинився на питанні 1/10" : "You stopped at question 1/10"}
+              </div>
+            </div>
+          </div>
+          <Link href="/interview" className="btn btn-primary" style={{ padding: "8px 16px", borderRadius: "var(--radius-full)", fontSize: "0.85rem" }}>
+            {uk ? "Продовжити" : "Continue"} <ChevronRight size={14} />
+          </Link>
+        </div>
+
+        <div style={{ padding: "8px 12px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <Award size={20} style={{ color: "#06b6d4" }} />
+              <div>
+                <div style={{ fontSize: "0.95rem", fontWeight: 600 }}>{uk ? "Виклик тижня" : "Weekly Challenge"}</div>
+                <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>{uk ? "3 симуляції співбесід" : "3 interview simulations"}</div>
+              </div>
+            </div>
+            <div style={{ fontSize: "0.9rem", fontWeight: 700 }}>0/3</div>
+          </div>
+          <div style={{ height: 6, background: "rgba(255,255,255,0.05)", borderRadius: 3, marginBottom: 16, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: "0%", background: "#06b6d4" }} />
+          </div>
+          <button style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--accent-light)", background: "none", border: "none", cursor: "pointer", fontSize: "0.85rem", fontWeight: 500 }}>
+            <Zap size={14} /> {uk ? "Почати симуляцію" : "Start simulation"}
+          </button>
+        </div>
+      </section>
+
+      {/* ── 4. Two Columns: Daily Challenge & Goal ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
+        {/* Daily Challenge */}
+        <section className="glass-card" style={{ padding: "24px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+            <div style={{ width: 36, height: 36, borderRadius: "50%", background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)" }}>
+              <Flame size={18} />
+            </div>
+            <div>
+              <div style={{ fontSize: "1rem", fontWeight: 600 }}>{uk ? "Челендж дня" : "Daily Challenge"}</div>
+              <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>{uk ? "5 хвилин на день — і ти в формі" : "5 mins a day keeps you in shape"}</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {[
+              { icon: Mic, label: uk ? "Відповісти на 1 питання співбесіди" : "Answer 1 interview question" },
+              { icon: Plus, label: uk ? "Переглянути 1 нову вакансію" : "View 1 new vacancy" },
+              { icon: FileText, label: uk ? "Зазирнути в резюме" : "Check your resume" }
+            ].map((item, i) => (
+              <div key={i} className="list-item" style={{ padding: "12px 16px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ width: 20, height: 20, borderRadius: "50%", border: "2px solid var(--text-muted)" }} />
+                  <item.icon size={16} style={{ color: "var(--accent-light)" }} />
+                  <span style={{ fontSize: "0.9rem", color: "var(--text-primary)" }}>{item.label}</span>
+                </div>
+                <ChevronRight size={16} style={{ color: "var(--text-muted)" }} />
+              </div>
+            ))}
+          </div>
+          <div style={{ textAlign: "center", marginTop: 16, fontSize: "0.75rem", color: "var(--text-muted)" }}>
+            {uk ? "Не загуби серію — лишилось 0 з 3" : "Don't lose streak — 0 of 3 left"}
+          </div>
+        </section>
+
+        {/* Set Goal */}
+        <section className="glass-card" style={{ padding: "24px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+            <div style={{ width: 36, height: 36, borderRadius: "50%", background: "rgba(108, 92, 231, 0.1)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent-light)" }}>
+              <Award size={18} />
+            </div>
+            <div>
+              <div style={{ fontSize: "1rem", fontWeight: 600 }}>{uk ? "Постав ціль" : "Set Goal"}</div>
+              <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>{uk ? "Ціль тримає в тонусі — і ми покажемо твій прогрес." : "A goal keeps you going — we'll show progress."}</div>
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
+            <div>
+              <label style={{ display: "block", fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: 6 }}>{uk ? "Хочу офер до" : "Want offer by"}</label>
+              <div style={{ position: "relative" }}>
+                <input type="text" placeholder="ДД.ММ.РРРР" className="form-input" style={{ paddingRight: 36 }} />
+                <Calendar size={16} style={{ position: "absolute", right: 12, top: 12, color: "var(--text-muted)" }} />
+              </div>
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: 6 }}>{uk ? "Відгуків на тиждень" : "Applications per week"}</label>
+              <input type="number" defaultValue="5" className="form-input" />
+            </div>
+          </div>
+          <button className="btn" style={{ width: "100%", background: "var(--bg-active)", color: "var(--accent-light)", fontWeight: 600 }}>
+            {uk ? "Зберегти ціль" : "Save goal"}
+          </button>
+        </section>
+      </div>
+
+      {/* ── 5. Achievements ── */}
+      <section className="glass-card" style={{ padding: "24px", marginBottom: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ width: 36, height: 36, borderRadius: "50%", background: "rgba(245, 158, 11, 0.1)", display: "flex", alignItems: "center", justifyContent: "center", color: "#f59e0b" }}>
+              <Award size={18} />
+            </div>
+            <div>
+              <div style={{ fontSize: "1rem", fontWeight: 600 }}>{uk ? "Досягнення" : "Achievements"}</div>
+              <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>0 / 25 {uk ? "відкрито" : "unlocked"}</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="topbar-icon-btn"><ChevronLeft size={16} /></button>
+            <button className="topbar-icon-btn"><ChevronRight size={16} /></button>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 16, overflowX: "auto", paddingBottom: 8 }}>
+          {[
+            { icon: FileText, label: uk ? "Перше резюме" : "First Resume" },
+            { icon: Briefcase, label: uk ? "Перший відгук" : "First Apply" },
+            { icon: Mic, label: uk ? "Перше інтерв'ю" : "First Interview" },
+            { icon: FileText, label: uk ? "Перший ATS" : "First ATS" },
+            { icon: Flame, label: uk ? "Серія 3 дні" : "3-day streak" },
+            { icon: Briefcase, label: uk ? "5 вакансій" : "5 vacancies" },
+            { icon: Mic, label: uk ? "3 інтерв'ю" : "3 interviews" },
+            { icon: User, label: uk ? "Перший реферал" : "First referral" },
+            { icon: Flame, label: uk ? "Серія 7 днів" : "7-day streak" },
+          ].map((ach, i) => (
+            <div key={i} style={{ width: 80, flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 10, opacity: 0.5 }}>
+              <div style={{ width: 54, height: 54, borderRadius: "50%", background: "var(--bg-card-alt)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <ach.icon size={22} style={{ color: "var(--text-muted)" }} />
+              </div>
+              <span style={{ fontSize: "0.7rem", textAlign: "center", lineHeight: 1.2, color: "var(--text-secondary)" }}>{ach.label}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ── 6. Career Progress ── */}
+      <section style={{ marginBottom: 32 }}>
+        <h3 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: 16 }}>{uk ? "Кар'єрний прогрес" : "Career Progress"}</h3>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
+          {[
+            { value: "0", label: uk ? "Відгуків" : "Applications", color: "var(--text-primary)" },
+            { value: "0%", label: uk ? "Сер. ATS" : "Avg. ATS", color: "#ef4444" },
+            { value: "0", label: uk ? "Інтерв'ю" : "Interviews", color: "var(--text-primary)" }
+          ].map((stat, i) => (
+            <div key={i} className="glass-card" style={{ padding: "20px 24px" }}>
+              <div style={{ fontSize: "2rem", fontWeight: 700, color: stat.color, marginBottom: 4 }}>{stat.value}</div>
+              <div style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>{stat.label}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ── 7. Recommended Vacancies ── */}
+      <section style={{ marginBottom: 32 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <h3 style={{ fontSize: "1rem", fontWeight: 600 }}>{uk ? "Рекомендовані вакансії" : "Recommended Vacancies"}</h3>
+          <button style={{ background: "none", border: "none", color: "var(--text-secondary)", fontSize: "0.85rem", cursor: "pointer" }}>{uk ? "Усі →" : "All →"}</button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {[
+            { company: "GreyHunter", role: "Junior Front-end Developer", color: "#22c55e", initial: "G" },
+            { company: "DEV-3", role: "Junior Front-end Developer", color: "#0ea5e9", initial: "D" },
+            { company: "ABP", role: "Trainee Front-End Developer", color: "#ef4444", initial: "A" }
+          ].map((vac, i) => (
+            <div key={i} className="list-item">
+              <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                <div style={{ width: 40, height: 40, borderRadius: "8px", background: vac.color, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 700, fontSize: "1.1rem" }}>
+                  {vac.initial}
+                </div>
+                <div>
+                  <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "var(--text-primary)" }}>{vac.company}</div>
+                  <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>{vac.role}</div>
+                </div>
+              </div>
+              <button className="btn btn-secondary" style={{ padding: "6px 14px", fontSize: "0.8rem", borderRadius: "var(--radius-full)" }}>
+                {uk ? "Додай резюме" : "Add resume"}
+              </button>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ── 8. Vacancies in process & Quick Actions ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 24 }}>
+        <section>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+            <h3 style={{ fontSize: "0.9rem", fontWeight: 600, color: "var(--text-secondary)" }}>{uk ? "Вакансії в процесі" : "Vacancies in process"}</h3>
+            <button style={{ background: "none", border: "none", color: "var(--text-secondary)", fontSize: "0.8rem", cursor: "pointer" }}>{uk ? "Всі →" : "All →"}</button>
+          </div>
+          <div className="glass-card" style={{ padding: "16px", display: "inline-block", minWidth: 180 }}>
+            <div style={{ fontSize: "0.95rem", fontWeight: 600, marginBottom: 4 }}>Evoplay</div>
+            <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: 12 }}>Front-end Developer (...</div>
+            <span className="badge" style={{ background: "rgba(255,255,255,0.05)", color: "var(--text-secondary)", fontSize: "0.7rem", fontWeight: 500, padding: "4px 10px" }}>
+              {uk ? "Список" : "List"}
             </span>
           </div>
-        </div>
+        </section>
 
-        {/* Dashboard Tabs Grid */}
-        <div style={{ display: "grid", gridTemplateColumns: "250px 1fr", gap: "30px" }}>
-          {/* Sidebar Navigation */}
-          <aside style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            <button
-              onClick={() => setActiveTab("practice")}
-              className="btn"
-              style={{
-                justifyContent: "flex-start",
-                background: activeTab === "practice" ? "rgba(124, 77, 255, 0.15)" : "transparent",
-                color: activeTab === "practice" ? "var(--color-text-primary)" : "var(--color-text-secondary)",
-                border: "1px solid",
-                borderColor: activeTab === "practice" ? "rgba(124, 77, 255, 0.3)" : "transparent",
-                padding: "14px 20px",
-                borderRadius: "var(--radius-sm)",
-              }}
-            >
-              <Play size={18} style={{ color: activeTab === "practice" ? "var(--color-secondary)" : "inherit" }} />
-              {getTranslation(locale, "practiceHub")}
+        <section>
+          <h3 style={{ fontSize: "0.9rem", fontWeight: 600, color: "var(--text-secondary)", marginBottom: 16 }}>{uk ? "Швидкі дії" : "Quick actions"}</h3>
+          <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
+            <button className="btn btn-primary" style={{ padding: "10px 20px", borderRadius: "var(--radius-md)", gap: 8, flex: 1 }}>
+              <Zap size={16} /> {uk ? "Бліц-інтерв'ю 5 хв" : "5 min blitz interview"}
             </button>
-
-            <button
-              onClick={() => setActiveTab("history")}
-              className="btn"
-              style={{
-                justifyContent: "flex-start",
-                background: activeTab === "history" ? "rgba(124, 77, 255, 0.15)" : "transparent",
-                color: activeTab === "history" ? "var(--color-text-primary)" : "var(--color-text-secondary)",
-                border: "1px solid",
-                borderColor: activeTab === "history" ? "rgba(124, 77, 255, 0.3)" : "transparent",
-                padding: "14px 20px",
-                borderRadius: "var(--radius-sm)",
-              }}
-            >
-              <History size={18} style={{ color: activeTab === "history" ? "var(--color-secondary)" : "inherit" }} />
-              {getTranslation(locale, "sessionHistory")}
+            <button className="btn btn-secondary" style={{ padding: "10px 20px", borderRadius: "var(--radius-md)", gap: 8, flex: 1 }}>
+              <FileText size={16} /> {uk ? "Оптимізувати резюме" : "Optimize resume"}
             </button>
-
-            <button
-              onClick={() => setActiveTab("analytics")}
-              className="btn"
-              style={{
-                justifyContent: "flex-start",
-                background: activeTab === "analytics" ? "rgba(124, 77, 255, 0.15)" : "transparent",
-                color: activeTab === "analytics" ? "var(--color-text-primary)" : "var(--color-text-secondary)",
-                border: "1px solid",
-                borderColor: activeTab === "analytics" ? "rgba(124, 77, 255, 0.3)" : "transparent",
-                padding: "14px 20px",
-                borderRadius: "var(--radius-sm)",
-              }}
-            >
-              <TrendingUp size={18} style={{ color: activeTab === "analytics" ? "var(--color-secondary)" : "inherit" }} />
-              {getTranslation(locale, "performanceStats")}
+            <button className="btn btn-secondary" style={{ padding: "10px 20px", borderRadius: "var(--radius-md)", gap: 8, flex: 1 }}>
+              <Plus size={16} /> {uk ? "Додати вакансію" : "Add vacancy"}
             </button>
-
-            <button
-              onClick={() => setActiveTab("billing")}
-              className="btn"
-              style={{
-                justifyContent: "flex-start",
-                background: activeTab === "billing" ? "rgba(124, 77, 255, 0.15)" : "transparent",
-                color: activeTab === "billing" ? "var(--color-text-primary)" : "var(--color-text-secondary)",
-                border: "1px solid",
-                borderColor: activeTab === "billing" ? "rgba(124, 77, 255, 0.3)" : "transparent",
-                padding: "14px 20px",
-                borderRadius: "var(--radius-sm)",
-              }}
-            >
-              <CreditCard size={18} style={{ color: activeTab === "billing" ? "var(--color-secondary)" : "inherit" }} />
-              {getTranslation(locale, "billingPortal")}
-            </button>
-          </aside>
-
-          {/* Core Panel Content */}
-          <section className="glass-card" style={{ padding: "30px", minHeight: "500px" }}>
-            {/* 1. PRACTICE HUB */}
-            {activeTab === "practice" && (
-              <div>
-                <h3 style={{ fontSize: "1.4rem", marginBottom: "8px" }}>{getTranslation(locale, "startInterviewTitle")}</h3>
-                <p style={{ color: "var(--color-text-secondary)", fontSize: "0.9rem", marginBottom: "30px" }}>
-                  {getTranslation(locale, "startInterviewDesc")}
-                </p>
-
-                {formError && (
-                  <div
-                    style={{
-                      background: "rgba(255, 82, 82, 0.1)",
-                      border: "1px solid rgba(255, 82, 82, 0.2)",
-                      color: "var(--color-error)",
-                      padding: "14px",
-                      borderRadius: "var(--radius-sm)",
-                      fontSize: "0.9rem",
-                      marginBottom: "24px",
-                    }}
-                  >
-                    {formError}
-                  </div>
-                )}
-
-                <form onSubmit={handleStartInterview} style={{ maxWidth: "500px" }}>
-                  <div className="form-group">
-                    <label className="form-label" htmlFor="role">
-                      {getTranslation(locale, "targetRole")}
-                    </label>
-                    <select
-                      id="role"
-                      className="form-input"
-                      style={{ appearance: "none" }}
-                      value={role}
-                      onChange={(e) => setRole(e.target.value)}
-                      required
-                    >
-                      <option value="Frontend Engineer">Frontend Engineer</option>
-                      <option value="Backend Engineer">Backend Engineer</option>
-                      <option value="Fullstack Engineer">Fullstack Engineer</option>
-                      <option value="Product Manager">Product Manager</option>
-                    </select>
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label" htmlFor="level">
-                      {getTranslation(locale, "experienceLevel")}
-                    </label>
-                    <select
-                      id="level"
-                      className="form-input"
-                      value={level}
-                      onChange={(e) => setLevel(e.target.value)}
-                      required
-                    >
-                      <option value="Junior">{locale === "uk-UA" ? "Junior (Початківець)" : "Junior Practice"}</option>
-                      <option value="Mid">{locale === "uk-UA" ? "Mid (Середній)" : "Mid Practice"}</option>
-                      <option value="Senior">{locale === "uk-UA" ? "Senior (Сеньйор)" : "Senior Technical Practice"}</option>
-                    </select>
-                  </div>
-
-                  <div className="form-group" style={{ marginBottom: "36px" }}>
-                    <label className="form-label" htmlFor="language">
-                      {getTranslation(locale, "interviewLanguage")}
-                    </label>
-                    <select
-                      id="language"
-                      className="form-input"
-                      value={language}
-                      onChange={(e) => setLanguage(e.target.value)}
-                      required
-                    >
-                      {SUPPORTED_LANGUAGES.map((lang) => (
-                        <option key={lang.code} value={lang.code}>
-                          {lang.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <button
-                    type="submit"
-                    className="btn btn-primary"
-                    style={{ width: "100%", padding: "14px", fontSize: "1rem" }}
-                    disabled={startingSession}
-                  >
-                    <Play size={16} />
-                    {startingSession ? (locale === "uk-UA" ? "Генерація питань ШІ..." : "Generating interview questions...") : getTranslation(locale, "launchBtn")}
-                  </button>
-                </form>
-
-                {/* Info Alert on Credits */}
-                <div
-                  style={{
-                    marginTop: "40px",
-                    background: "rgba(255, 255, 255, 0.02)",
-                    border: "1px solid var(--border-color)",
-                    borderRadius: "var(--radius-sm)",
-                    padding: "20px",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "16px",
-                  }}
-                >
-                  <ShieldCheck size={36} style={{ color: "var(--color-secondary)", flexShrink: 0 }} />
-                  <div style={{ fontSize: "0.85rem", color: "var(--color-text-secondary)", lineHeight: "1.4" }}>
-                    <strong style={{ color: "var(--color-text-primary)" }}>{locale === "uk-UA" ? "Інструкція голосу" : "Voice loop instructions"}</strong>: {
-                      locale === "uk-UA"
-                        ? "Переконайтеся, що ваш мікрофон підключено. ШІ промовляє питання вголос і автоматично записує ваші відповіді. Кожна сесія списує 1 кредит для безкоштовних акаунтів, та є безлімітною для Pro."
-                        : "Ensure your microphone is fully connected. The AI speaks questions out loud, and auto-records your response. Each session consumes 1 practice credit for free accounts, and is unlimited for Pro accounts."
-                    }
-                  </div>
-                </div>
+          </div>
+          
+          <div className="glass-card" style={{ padding: "16px 20px", display: "flex", alignItems: "center", gap: 16 }}>
+            <div style={{ width: 36, height: 36, borderRadius: "8px", background: "rgba(6, 182, 212, 0.1)", display: "flex", alignItems: "center", justifyContent: "center", color: "#06b6d4" }}>
+              <Sparkles size={18} />
+            </div>
+            <div>
+              <div style={{ fontSize: "0.95rem", fontWeight: 600, marginBottom: 4 }}>{uk ? "Порада дня" : "Tip of the day"}</div>
+              <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>
+                {uk ? "Адаптуй резюме під кожну вакансію — навіть кілька ключових слів підвищують шанс пройти ATS." : "Adapt your resume for each vacancy — even a few keywords increase ATS passing chances."}
               </div>
-            )}
+            </div>
+          </div>
+        </section>
+      </div>
 
-            {/* 2. HISTORY REGISTRY */}
-            {activeTab === "history" && (
-              <div>
-                <h3 style={{ fontSize: "1.4rem", marginBottom: "8px" }}>{locale === "uk-UA" ? "Історія проведених співбесід" : "Practice Session Registry"}</h3>
-                <p style={{ color: "var(--color-text-secondary)", fontSize: "0.9rem", marginBottom: "30px" }}>
-                  {locale === "uk-UA" ? "Переглядайте свої бали, зауваження та аналіз відповідей ШІ." : "Review your score card reports, critiques, and ideal answers keys."}
-                </p>
-
-                {dataLoading ? (
-                  <div style={{ color: "var(--color-text-muted)" }}>Loading records...</div>
-                ) : interviews.length === 0 ? (
-                  <div style={{ textAlign: "center", padding: "60px 20px" }}>
-                    <Frown size={48} style={{ color: "var(--color-text-muted)", marginBottom: "16px" }} />
-                    <p style={{ color: "var(--color-text-secondary)" }}>No practice sessions registered yet.</p>
-                    <button
-                      onClick={() => setActiveTab("practice")}
-                      className="btn btn-primary"
-                      style={{ marginTop: "16px" }}
-                    >
-                      Start Practicing
-                    </button>
-                  </div>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-                    {interviews.map((item) => (
-                      <div
-                        key={item.id}
-                        style={{
-                          background: "rgba(255, 255, 255, 0.02)",
-                          border: "1px solid var(--border-color)",
-                          borderRadius: "var(--radius-sm)",
-                          padding: "20px",
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          flexWrap: "wrap",
-                          gap: "16px",
-                        }}
-                      >
-                        <div>
-                          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "6px" }}>
-                            <strong style={{ fontSize: "1.1rem" }}>{item.role}</strong>
-                            <span className="badge badge-free" style={{ fontSize: "0.7rem", padding: "2px 8px" }}>
-                              {item.level}
-                            </span>
-                          </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: "12px", fontSize: "0.8rem", color: "var(--color-text-muted)" }}>
-                            <span>{new Date(item.createdAt).toLocaleDateString()}</span>
-                            <span>&bull;</span>
-                            {item.status === "COMPLETED" ? (
-                              <span style={{ display: "flex", alignItems: "center", gap: "4px", color: "var(--color-success)" }}>
-                                <CheckCircle size={12} /> Completed
-                              </span>
-                            ) : (
-                              <span style={{ display: "flex", alignItems: "center", gap: "4px", color: "var(--color-warning)" }}>
-                                <Clock size={12} /> In Progress
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
-                          {item.status === "COMPLETED" && (
-                            <div style={{ textAlign: "right" }}>
-                              <span style={{ fontSize: "0.8rem", color: "var(--color-text-muted)" }}>Score</span>
-                              <div style={{ fontSize: "1.4rem", fontWeight: 800, color: "var(--color-secondary)", fontFamily: "var(--font-mono)" }}>
-                                {item.overallScore}/100
-                              </div>
-                            </div>
-                          )}
-                          
-                          {item.status === "COMPLETED" ? (
-                            <button
-                              onClick={() => router.push(`/interview/${item.id}/result`)}
-                              className="btn btn-secondary"
-                              style={{ padding: "8px 16px", fontSize: "0.85rem" }}
-                            >
-                              Report Card
-                              <ChevronRight size={14} />
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => router.push(`/interview/${item.id}`)}
-                              className="btn btn-primary"
-                              style={{ padding: "8px 16px", fontSize: "0.85rem" }}
-                            >
-                              Resume
-                              <ArrowUpRight size={14} />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* 3. PERFORMANCE STATS */}
-            {activeTab === "analytics" && (
-              <div>
-                <h3 style={{ fontSize: "1.4rem", marginBottom: "8px" }}>Performance Analytics</h3>
-                <p style={{ color: "var(--color-text-secondary)", fontSize: "0.9rem", marginBottom: "30px" }}>
-                  Analyze grading trends, average responses correctness, and improvement velocity.
-                </p>
-
-                {/* Scorecards Stats Blocks */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "20px", marginBottom: "40px" }}>
-                  <div
-                    style={{
-                      background: "rgba(255, 255, 255, 0.02)",
-                      border: "1px solid var(--border-color)",
-                      padding: "20px",
-                      borderRadius: "var(--radius-sm)",
-                      textAlign: "center",
-                    }}
-                  >
-                    <span style={{ fontSize: "0.8rem", color: "var(--color-text-secondary)", textTransform: "uppercase" }}>
-                      Average Graded Score
-                    </span>
-                    <div style={{ fontSize: "2.5rem", fontWeight: 800, color: "var(--color-secondary)", fontFamily: "var(--font-mono)", marginTop: "8px" }}>
-                      {averageScore > 0 ? `${averageScore}/100` : "N/A"}
-                    </div>
-                  </div>
-
-                  <div
-                    style={{
-                      background: "rgba(255, 255, 255, 0.02)",
-                      border: "1px solid var(--border-color)",
-                      padding: "20px",
-                      borderRadius: "var(--radius-sm)",
-                      textAlign: "center",
-                    }}
-                  >
-                    <span style={{ fontSize: "0.8rem", color: "var(--color-text-secondary)", textTransform: "uppercase" }}>
-                      Sessions Completed
-                    </span>
-                    <div style={{ fontSize: "2.5rem", fontWeight: 800, color: "var(--color-primary)", fontFamily: "var(--font-mono)", marginTop: "8px" }}>
-                      {completedInterviews.length}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Chart Section */}
-                <div>
-                  <h4 style={{ fontSize: "1.1rem", marginBottom: "16px" }}>Historical Progression (Recent 5 Runs)</h4>
-                  {completedInterviews.length === 0 ? (
-                    <div
-                      style={{
-                        padding: "40px",
-                        textAlign: "center",
-                        background: "rgba(255, 255, 255, 0.01)",
-                        border: "1px dashed var(--border-color)",
-                        borderRadius: "var(--radius-sm)",
-                        color: "var(--color-text-muted)",
-                      }}
-                    >
-                      Complete mock interviews to track your grade chart.
-                    </div>
-                  ) : (
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "flex-end",
-                        justifyContent: "space-around",
-                        height: "220px",
-                        background: "rgba(0, 0, 0, 0.2)",
-                        border: "1px solid var(--border-color)",
-                        borderRadius: "var(--radius-sm)",
-                        padding: "30px 20px 10px",
-                        position: "relative",
-                      }}
-                    >
-                      {/* Grid Lines */}
-                      <div style={{ position: "absolute", top: "25%", left: 0, right: 0, borderBottom: "1px dashed rgba(255,255,255,0.05)" }}></div>
-                      <div style={{ position: "absolute", top: "50%", left: 0, right: 0, borderBottom: "1px dashed rgba(255,255,255,0.05)" }}></div>
-                      <div style={{ position: "absolute", top: "75%", left: 0, right: 0, borderBottom: "1px dashed rgba(255,255,255,0.05)" }}></div>
-
-                      {[...completedInterviews].reverse().slice(0, 5).map((item, idx) => {
-                        const score = item.overallScore || 0;
-                        const isHovered = hoveredBarIndex === idx;
-                        return (
-                          <div
-                            key={item.id}
-                            onMouseEnter={() => setHoveredBarIndex(idx)}
-                            onMouseLeave={() => setHoveredBarIndex(null)}
-                            style={{
-                              display: "flex",
-                              flexDirection: "column",
-                              alignItems: "center",
-                              height: "100%",
-                              justifyContent: "flex-end",
-                              zIndex: 1,
-                              width: "60px",
-                              position: "relative",
-                              cursor: "pointer"
-                            }}
-                          >
-                            {isHovered && (
-                              <div style={{
-                                position: "absolute",
-                                bottom: `${score * 1.5 + 40}px`,
-                                background: "rgba(17, 15, 24, 0.95)",
-                                border: "1px solid var(--border-glow)",
-                                padding: "8px 12px",
-                                borderRadius: "6px",
-                                fontSize: "0.75rem",
-                                color: "#fff",
-                                whiteSpace: "nowrap",
-                                boxShadow: "0 4px 15px rgba(0,0,0,0.5)",
-                                zIndex: 10,
-                                display: "flex",
-                                flexDirection: "column",
-                                gap: "4px",
-                                pointerEvents: "none"
-                              }}>
-                                <strong style={{ color: "var(--color-secondary)" }}>{item.role}</strong>
-                                <span style={{ color: "var(--color-text-secondary)" }}>Level: {item.level}</span>
-                                <span style={{ color: "var(--color-success)" }}>Score: {score}%</span>
-                              </div>
-                            )}
-                            <span style={{ fontSize: "0.8rem", color: isHovered ? "var(--color-secondary-hover)" : "var(--color-secondary)", fontWeight: "bold", marginBottom: "6px", fontFamily: "var(--font-mono)", transition: "color var(--transition-fast)" }}>
-                              {score}%
-                            </span>
-                            <div
-                              style={{
-                                width: "32px",
-                                height: `${score * 1.5}px`,
-                                background: isHovered 
-                                  ? "linear-gradient(to top, var(--color-primary-hover) 0%, var(--color-secondary-hover) 100%)" 
-                                  : "linear-gradient(to top, var(--color-primary) 0%, var(--color-secondary) 100%)",
-                                borderRadius: "4px 4px 0 0",
-                                boxShadow: isHovered ? "0 0 15px var(--color-secondary-glow)" : "var(--shadow-glow-cyan)",
-                                transition: "height 0.8s ease, background 0.2s, box-shadow 0.2s, transform 0.2s",
-                                transform: isHovered ? "scaleX(1.15)" : "scaleX(1)",
-                                transformOrigin: "bottom center"
-                              }}
-                            ></div>
-                            <span
-                              style={{
-                                fontSize: "0.7rem",
-                                color: isHovered ? "var(--color-text-primary)" : "var(--color-text-muted)",
-                                marginTop: "8px",
-                                textAlign: "center",
-                                whiteSpace: "nowrap",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                width: "60px",
-                                transition: "color var(--transition-fast)"
-                              }}
-                              title={item.role}
-                            >
-                              Run {idx + 1}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* 4. BILLING PORTAL */}
-            {activeTab === "billing" && (
-              <div>
-                <h3 style={{ fontSize: "1.4rem", marginBottom: "8px" }}>{locale === "uk-UA" ? "Тарифні плани та оплата" : "Billing & Subscriptions"}</h3>
-                <p style={{ color: "var(--color-text-secondary)", fontSize: "0.9rem", marginBottom: "30px" }}>
-                  {locale === "uk-UA" ? "Керуйте своїми підписками, купуйте пакети кредитів або переходьте на Pro." : "Manage subscriptions, purchase additional interview credits, and review billing status."}
-                </p>
-
-                {/* Subscription status banner */}
-                <div
-                  style={{
-                    background: user?.isPro ? "rgba(124, 77, 255, 0.1)" : "rgba(255, 255, 255, 0.02)",
-                    border: "1px solid",
-                    borderColor: user?.isPro ? "var(--color-primary)" : "var(--border-color)",
-                    borderRadius: "var(--radius-sm)",
-                    padding: "24px",
-                    marginBottom: "36px",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    flexWrap: "wrap",
-                    gap: "16px",
-                  }}
-                >
-                  <div>
-                    <span style={{ fontSize: "0.8rem", color: "var(--color-text-secondary)", textTransform: "uppercase" }}>
-                      {locale === "uk-UA" ? "Поточний тариф" : "Current Plan"}
-                    </span>
-                    <h4 style={{ fontSize: "1.5rem", marginTop: "4px", display: "flex", alignItems: "center", gap: "8px" }}>
-                      {user?.isPro ? (
-                        <>
-                          <Sparkles size={20} style={{ color: "var(--color-secondary)" }} />
-                          {locale === "uk-UA" ? "Безлімітна PRO Підписка" : "Unlimited Pro Subscription"}
-                        </>
-                      ) : (
-                        locale === "uk-UA" ? "Безкоштовний тариф" : "Free Practice Tier"
-                      )}
-                    </h4>
-                    <p style={{ fontSize: "0.85rem", color: "var(--color-text-muted)", marginTop: "4px" }}>
-                      {user?.isPro
-                        ? (locale === "uk-UA" ? "Активна підписка. Автоматичне подовження включено." : "Active subscription. Automatic renewal enabled.")
-                        : (locale === "uk-UA" ? `У вас залишилося ${user?.credits} кредитів для проходження співбесід.` : `You have ${user?.credits} interview session credits left.`)}
-                    </p>
-                  </div>
-
-                  {user?.isPro && (
-                    <button
-                      onClick={handleCancelSubscription}
-                      className="btn btn-secondary"
-                      style={{ border: "1px solid rgba(255, 82, 82, 0.3)", color: "var(--color-error)" }}
-                      disabled={billingLoading}
-                    >
-                      {locale === "uk-UA" ? "Скасувати підписку" : "Cancel Subscription"}
-                    </button>
-                  )}
-                </div>
-
-                {!user?.isPro && (
-                  <div>
-                    <h4 style={{ fontSize: "1.1rem", marginBottom: "16px" }}>Upgrade Options</h4>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "20px" }}>
-                      {/* Buy Credit Pack */}
-                      <div className="glass-card" style={{ padding: "24px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-                        <div>
-                          <strong style={{ fontSize: "1.1rem" }}>5-Interview Credit Pack</strong>
-                          <p style={{ fontSize: "0.8rem", margin: "8px 0 16px 0", color: "var(--color-text-secondary)" }}>
-                            Add 5 practice session credits to your account. Credits do not expire.
-                          </p>
-                          <div style={{ fontSize: "1.5rem", fontWeight: 800, marginBottom: "20px" }}>
-                            $15.00 <span style={{ fontSize: "0.8rem", color: "var(--color-text-muted)", fontWeight: 500 }}>once</span>
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => handleCheckout("5_CREDITS")}
-                          className="btn btn-secondary"
-                          style={{ width: "100%" }}
-                          disabled={billingLoading}
-                        >
-                          {billingLoading ? "Loading..." : "Purchase Credits"}
-                        </button>
-                      </div>
-
-                      {/* Upgrade to Pro */}
-                      <div
-                        className="glass-card"
-                        style={{
-                          padding: "24px",
-                          border: "1px solid var(--color-primary)",
-                          display: "flex",
-                          flexDirection: "column",
-                          justifyContent: "space-between",
-                          boxShadow: "0 0 15px rgba(124, 77, 255, 0.15)",
-                        }}
-                      >
-                        <div>
-                          <strong style={{ fontSize: "1.1rem", display: "flex", alignItems: "center", gap: "6px" }}>
-                            <Sparkles size={16} style={{ color: "var(--color-secondary)" }} />
-                            Unlimited Pro Membership
-                          </strong>
-                          <p style={{ fontSize: "0.8rem", margin: "8px 0 16px 0", color: "var(--color-text-secondary)" }}>
-                            Practice unlimited mock interviews, unlock all roles, and track detailed grading report histories.
-                          </p>
-                          <div style={{ fontSize: "1.5rem", fontWeight: 800, marginBottom: "20px" }}>
-                            $29.00 <span style={{ fontSize: "0.8rem", color: "var(--color-text-muted)", fontWeight: 500 }}>/ month</span>
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => handleCheckout("PRO_MONTHLY")}
-                          className="btn btn-primary"
-                          style={{ width: "100%" }}
-                          disabled={billingLoading}
-                        >
-                          {billingLoading ? "Loading..." : "Upgrade Now"}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </section>
-        </div>
-      </main>
-    </>
+    </div>
   );
 }

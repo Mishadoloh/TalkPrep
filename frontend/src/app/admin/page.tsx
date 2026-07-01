@@ -2,8 +2,6 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import Header from "@/components/Header";
-import BackgroundBlobs from "@/components/BackgroundBlobs";
 import { getTranslation, Locale } from "@/lib/translations";
 import { 
   ShieldAlert, 
@@ -196,8 +194,6 @@ export default function AdminPanel() {
   if (!isUnlocked) {
     return (
       <>
-        <Header />
-        <BackgroundBlobs />
         <main className="container flex-center" style={{ minHeight: "80vh", padding: "40px 24px" }}>
           <div className="glass-card" style={{ width: "100%", maxWidth: "420px", padding: "40px 30px", textAlign: "center" }}>
             <div style={{ background: "rgba(255, 82, 82, 0.1)", width: "60px", height: "60px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
@@ -244,8 +240,6 @@ export default function AdminPanel() {
 
   return (
     <>
-      <Header />
-      <BackgroundBlobs />
 
       <main className="container" style={{ flex: 1, padding: "50px 24px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "40px" }}>

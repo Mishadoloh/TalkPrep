@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
+from question_bank_data import DEFAULT_QUESTION_BANK
 
 # --- DISTRIBUTED TRACING (GOOGLE DAPPER PATTERN) ---
 correlation_id_ctx = contextvars.ContextVar("correlation_id", default="-")
@@ -90,6 +91,25 @@ def get_db_cursor():
     finally:
         conn.close()
 
+def seed_question_bank(cursor):
+    for item in DEFAULT_QUESTION_BANK:
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO question_bank_items
+                (id, language, role, level, category, question_text, ideal_answer)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()),
+                item["language"],
+                item["role"],
+                item["level"],
+                item["category"],
+                item["question"],
+                item["ideal"],
+            )
+        )
+
 def run_migrations():
     logger.info("Initializing AI database migrations check...")
     with get_db_cursor() as cursor:
@@ -139,7 +159,55 @@ def run_migrations():
             cursor.execute("ALTER TABLE questions ADD COLUMN filler_count INTEGER NULL;")
             cursor.execute("INSERT INTO schema_migrations (version, description) VALUES (2, 'Add lexical metrics columns')")
 
-        logger.info(f"AI database migrations applied. Current Schema Version: {max(current_version, 2)}")
+        if current_version < 3:
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS question_bank_items (
+                id TEXT PRIMARY KEY,
+                role TEXT NOT NULL,
+                level TEXT NOT NULL,
+                language TEXT NOT NULL DEFAULT 'en-US',
+                category TEXT NOT NULL,
+                question_text TEXT NOT NULL,
+                ideal_answer TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(role, level, question_text)
+            );
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_question_bank_role_level ON question_bank_items(role, level);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_question_bank_category ON question_bank_items(category);")
+            cursor.execute("INSERT INTO schema_migrations (version, description) VALUES (3, 'Create interview question bank')")
+        else:
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS question_bank_items (
+                id TEXT PRIMARY KEY,
+                role TEXT NOT NULL,
+                level TEXT NOT NULL,
+                language TEXT NOT NULL DEFAULT 'en-US',
+                category TEXT NOT NULL,
+                question_text TEXT NOT NULL,
+                ideal_answer TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(role, level, question_text)
+            );
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_question_bank_role_level ON question_bank_items(role, level);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_question_bank_category ON question_bank_items(category);")
+
+        cursor.execute("PRAGMA table_info(question_bank_items)")
+        question_bank_columns = {row["name"] for row in cursor.fetchall()}
+        if "language" not in question_bank_columns:
+            cursor.execute("ALTER TABLE question_bank_items ADD COLUMN language TEXT NOT NULL DEFAULT 'en-US';")
+
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_question_bank_language ON question_bank_items(language);")
+
+        seed_question_bank(cursor)
+        cursor.execute("SELECT COUNT(*) AS count FROM question_bank_items")
+        question_bank_count = cursor.fetchone()["count"]
+
+        logger.info(
+            f"AI database migrations applied. Current Schema Version: {max(current_version, 3)}. "
+            f"Question bank rows: {question_bank_count}"
+        )
 
 run_migrations()
 
@@ -383,14 +451,102 @@ MOCK_BANK = {
     ]
 }
 
+def normalize_level(level: str) -> str:
+    aliases = {
+        "middle": "Mid",
+        "mid": "Mid",
+        "junior": "Junior",
+        "senior": "Senior",
+    }
+    return aliases.get((level or "").strip().lower(), level or "Mid")
+
+def get_question_bank_items(role: str, level: str, language: str = "en-US", count: int = 3) -> list[dict]:
+    normalized_level = normalize_level(level)
+    normalized_language = language or "en-US"
+    safe_count = max(1, min(int(count or 3), 15))
+    selected = []
+    selected_ids = set()
+
+    lookup_order = [
+        (role, normalized_level),
+        (role, "Mid"),
+        (role, "Junior"),
+        ("Frontend Engineer", normalized_level),
+        ("Frontend Engineer", "Mid"),
+        ("Frontend Engineer", "Junior"),
+    ]
+
+    with get_db_cursor() as cursor:
+        for lookup_role, lookup_level in lookup_order:
+            if len(selected) >= safe_count:
+                break
+
+            cursor.execute(
+                """
+                SELECT id, language, role, level, category, question_text, ideal_answer
+                FROM question_bank_items
+                WHERE role = ? AND level = ? AND language = ?
+                ORDER BY RANDOM()
+                LIMIT ?
+                """,
+                (lookup_role, lookup_level, normalized_language, safe_count)
+            )
+
+            for row in cursor.fetchall():
+                if row["id"] in selected_ids:
+                    continue
+                selected_ids.add(row["id"])
+                selected.append({"q": row["question_text"], "ideal": row["ideal_answer"]})
+                if len(selected) >= safe_count:
+                    break
+
+        if len(selected) < safe_count:
+            placeholders = ",".join("?" for _ in selected_ids) or "''"
+            excluded_ids = list(selected_ids)
+            cursor.execute(
+                f"""
+                SELECT id, question_text, ideal_answer
+                FROM question_bank_items
+                WHERE id NOT IN ({placeholders}) AND language = ?
+                ORDER BY RANDOM()
+                LIMIT ?
+                """,
+                (*excluded_ids, normalized_language, safe_count - len(selected))
+            )
+            for row in cursor.fetchall():
+                selected_ids.add(row["id"])
+                selected.append({"q": row["question_text"], "ideal": row["ideal_answer"]})
+
+        if len(selected) < safe_count:
+            placeholders = ",".join("?" for _ in selected_ids) or "''"
+            excluded_ids = list(selected_ids)
+            cursor.execute(
+                f"""
+                SELECT id, question_text, ideal_answer
+                FROM question_bank_items
+                WHERE id NOT IN ({placeholders})
+                ORDER BY RANDOM()
+                LIMIT ?
+                """,
+                (*excluded_ids, safe_count - len(selected))
+            )
+            selected.extend({"q": row["question_text"], "ideal": row["ideal_answer"]} for row in cursor.fetchall())
+
+    if selected:
+        return selected
+
+    logger.warning("Question bank table is empty. Falling back to in-memory MOCK_BANK.")
+    return MOCK_BANK.get(role, MOCK_BANK["Frontend Engineer"])[:safe_count]
+
 # --- DYNAMIC GEMINI QUESTIONS GENERATOR ---
-def generate_questions_from_resume_jd(resume: str, jd: str, role: str, level: str, lang: str) -> list[dict]:
+def generate_questions_from_resume_jd(resume: str, jd: str, role: str, level: str, lang: str, count: int = 3) -> list[dict]:
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         logger.warning("No Gemini Key available for personalized interview. Falling back to default bank.")
-        return MOCK_BANK.get(role, MOCK_BANK["Frontend Engineer"])
+        return get_question_bank_items(role, level, lang, count)
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    safe_count = max(1, min(int(count or 3), 15))
     prompt = f"""
     You are an expert technical recruiter preparing questions for a technical interview.
     Language: {lang}
@@ -399,8 +555,8 @@ def generate_questions_from_resume_jd(resume: str, jd: str, role: str, level: st
     Candidate Resume Details: "{resume}"
     Target Job Description (JD): "{jd}"
 
-    Generate exactly 3 highly technical mock interview questions tailored directly to this candidate's background and this role.
-    Provide the output in a strict JSON array containing exactly 3 objects with keys "q" (the question string) and "ideal" (a 1-2 sentence reference answer key containing technical keywords to check for).
+    Generate exactly {safe_count} highly technical mock interview questions tailored directly to this candidate's background and this role.
+    Provide the output in a strict JSON array containing exactly {safe_count} objects with keys "q" (the question string) and "ideal" (a 1-2 sentence reference answer key containing technical keywords to check for).
     Do not wrap in markdown block formatting.
     """
 
@@ -411,13 +567,13 @@ def generate_questions_from_resume_jd(resume: str, jd: str, role: str, level: st
             raw_text = json_data["candidates"][0]["content"]["parts"][0]["text"].strip()
             clean_json = re.sub(r"```json|```", "", raw_text).strip()
             parsed = json.loads(clean_json)
-            if isinstance(parsed, list) and len(parsed) == 3:
-                logger.info("Successfully generated 3 customized questions using Google Gemini.")
+            if isinstance(parsed, list) and len(parsed) == safe_count:
+                logger.info(f"Successfully generated {safe_count} customized questions using Google Gemini.")
                 return parsed
     except Exception as e:
         logger.warning(f"Error generating dynamic questions via Gemini: {e}. Falling back to default bank.")
 
-    return MOCK_BANK.get(role, MOCK_BANK["Frontend Engineer"])
+    return get_question_bank_items(role, level, lang, safe_count)
 
 # --- CONTROLLERS ---
 class StartInterviewSchema(BaseModel):
@@ -426,10 +582,80 @@ class StartInterviewSchema(BaseModel):
     language: str
     resumeText: Optional[str] = ""
     jobDescriptionText: Optional[str] = ""
+    interviewType: Optional[str] = "technical"
+    questionCount: int = Field(default=3, ge=1, le=15)
 
 class AnswerSchema(BaseModel):
     questionId: str
     answerText: str
+
+@app.get("/api/question-bank")
+def get_question_bank(
+    role: Optional[str] = None,
+    level: Optional[str] = None,
+    category: Optional[str] = None,
+    language: Optional[str] = None,
+):
+    filters = []
+    params = []
+
+    if role:
+        filters.append("role = ?")
+        params.append(role)
+    if level:
+        filters.append("level = ?")
+        params.append(normalize_level(level))
+    if category:
+        filters.append("category = ?")
+        params.append(category)
+    if language:
+        filters.append("language = ?")
+        params.append(language)
+
+    where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+
+    with get_db_cursor() as cursor:
+        cursor.execute(
+            f"""
+            SELECT id, language, role, level, category, question_text, ideal_answer
+            FROM question_bank_items
+            {where_clause}
+            ORDER BY language, role, level, category, question_text
+            """,
+            params
+        )
+        questions = [
+            {
+                "id": row["id"],
+                "language": row["language"],
+                "role": row["role"],
+                "level": row["level"],
+                "category": row["category"],
+                "questionText": row["question_text"],
+                "idealAnswer": row["ideal_answer"],
+            }
+            for row in cursor.fetchall()
+        ]
+
+        cursor.execute(f"SELECT COUNT(*) AS total FROM question_bank_items {where_clause}", params)
+        total = cursor.fetchone()["total"]
+        cursor.execute(f"SELECT COUNT(DISTINCT role) AS roles FROM question_bank_items {where_clause}", params)
+        roles = cursor.fetchone()["roles"]
+        cursor.execute(f"SELECT COUNT(DISTINCT category) AS categories FROM question_bank_items {where_clause}", params)
+        categories = cursor.fetchone()["categories"]
+        cursor.execute("SELECT language, COUNT(*) AS count FROM question_bank_items GROUP BY language ORDER BY language")
+        languages = {row["language"]: row["count"] for row in cursor.fetchall()}
+
+    return {
+        "success": True,
+        "stats": {
+            "total": total,
+            "roles": roles,
+            "categories": categories,
+            "languages": languages,
+        },
+        "questions": questions,
+    }
 
 @app.post("/api/interview/start")
 def start_interview(data: StartInterviewSchema, x_user_id: str = Header(None)):
@@ -451,10 +677,15 @@ def start_interview(data: StartInterviewSchema, x_user_id: str = Header(None)):
     if data.resumeText or data.jobDescriptionText:
         logger.info(f"Generating custom questions for user {x_user_id} based on CV/JD inputs...")
         role_questions = generate_questions_from_resume_jd(
-            data.resumeText, data.jobDescriptionText, data.role, data.level, data.language
+            data.resumeText,
+            data.jobDescriptionText,
+            data.role,
+            data.level,
+            data.language,
+            data.questionCount
         )
     else:
-        role_questions = MOCK_BANK.get(data.role, MOCK_BANK["Frontend Engineer"])
+        role_questions = get_question_bank_items(data.role, data.level, data.language, data.questionCount)
         
     interview_id = str(uuid.uuid4())
 
@@ -469,7 +700,11 @@ def start_interview(data: StartInterviewSchema, x_user_id: str = Header(None)):
                 (str(uuid.uuid4()), interview_id, q["q"], q["ideal"])
             )
 
-    return {"success": True, "interviewId": interview_id}
+    return {
+        "success": True,
+        "interviewId": interview_id,
+        "questions": [{"questionText": q["q"]} for q in role_questions],
+    }
 
 @app.post("/api/interview/{interview_id}/answer")
 def submit_answer(interview_id: str, data: AnswerSchema, x_user_id: str = Header(None)):

@@ -6,9 +6,14 @@ import logging
 import time
 import uuid
 import contextvars
+import smtplib
+from email.mime.text import MIMEText
+from email.header import Header
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from fastapi import FastAPI, HTTPException, status, Request, Header
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field, validator
@@ -51,6 +56,7 @@ app.add_middleware(
 DB_PATH = os.path.join(os.path.dirname(__file__), "users.db")
 MAX_LOGIN_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 
 # --- GOOGLE-STYLE TOKEN BUCKET RATE LIMITER with IP BANNING ---
 class TokenBucketLimiterWithIPBanning:
@@ -233,9 +239,64 @@ class LoginSchema(BaseModel):
     loginIdentifier: str
     password: str
 
+class UpdatePasswordSchema(BaseModel):
+    userId: str
+    oldPassword: str
+    newPassword: str
+
+    @validator("newPassword")
+    def validate_password_strength(cls, v):
+        if not v.isdigit():
+            raise ValueError("Password must contain only digits.")
+        if len(v) < 6:
+            raise ValueError("Password must be at least 6 digits.")
+        return v
+
 class CreditUpdateSchema(BaseModel):
     type: str
     credits: int
+
+class ContactSchema(BaseModel):
+    name: str
+    email: str
+    message: str
+
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+CONTACT_RECEIVER_EMAIL = os.environ.get("CONTACT_RECEIVER_EMAIL", "dologmihajlo31@gmail.com")
+
+def send_contact_email(name: str, email: str, message: str) -> bool:
+    log_line = f"[{datetime.now().isoformat()}] From: {name} ({email})\nMessage: {message}\n"
+    try:
+        with open("contacts.log", "a", encoding="utf-8") as f:
+            f.write(log_line + "-"*40 + "\n")
+    except Exception as e:
+        logger.error(f"Failed to write to contacts.log: {e}")
+
+    if not SMTP_HOST or not SMTP_USERNAME or not SMTP_PASSWORD:
+        logger.warning("SMTP is not fully configured in environment variables. Logged message locally to contacts.log")
+        return True
+
+    try:
+        subject = f"TalkPrep AI: New Contact Message from {name}"
+        body = f"You have received a new contact support message.\n\nName: {name}\nEmail: {email}\nMessage:\n{message}\n\n--\nTalkPrep AI Support Gateway\n"
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = Header(subject, "utf-8")
+        msg["From"] = SMTP_USERNAME
+        msg["To"] = CONTACT_RECEIVER_EMAIL
+
+        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
+        server.starttls()
+        server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        server.sendmail(SMTP_USERNAME, [CONTACT_RECEIVER_EMAIL], msg.as_string())
+        server.quit()
+        logger.info(f"Contact email sent successfully to {CONTACT_RECEIVER_EMAIL}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send SMTP email: {e}")
+        return False
 
 # --- CRYPTO HELPERS ---
 def hash_password(password: str, salt: bytes = None) -> tuple[str, str]:
@@ -310,6 +371,155 @@ def register(data: RegisterSchema):
                 "credits": 1
             }
         }
+
+class GoogleTokenSchema(BaseModel):
+    token: str
+
+@app.post("/api/auth/google")
+def google_auth(data: GoogleTokenSchema):
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=500, detail="Google OAuth is not configured on the server.")
+    
+    try:
+        id_info = id_token.verify_oauth2_token(
+            data.token,
+            google_requests.Request(),
+            GOOGLE_CLIENT_ID,
+            clock_skew_in_seconds=10
+        )
+    except ValueError as e:
+        logger.warning(f"Google token verification failed: {e}")
+        raise HTTPException(status_code=401, detail="Invalid Google token.")
+
+    google_email = id_info.get("email", "").lower().strip()
+    google_name = id_info.get("given_name") or id_info.get("name") or google_email.split("@")[0]
+    google_sub = id_info.get("sub")  # unique Google user ID
+
+    if not google_email:
+        raise HTTPException(status_code=400, detail="Google account has no email.")
+
+    with get_db_cursor() as cursor:
+        # Check if user already exists
+        cursor.execute("SELECT * FROM users WHERE email = ?", (google_email,))
+        existing = cursor.fetchone()
+
+        if existing:
+            # User exists — log them in
+            logger.info(f"Google login for existing user: {existing['id']}")
+            return {
+                "success": True,
+                "user": {
+                    "id": existing["id"],
+                    "email": existing["email"],
+                    "username": existing["username"],
+                    "isPro": bool(existing["is_pro"]),
+                    "credits": existing["credits"]
+                }
+            }
+        else:
+            # New user — create account
+            user_id = str(uuid.uuid4())
+            # Generate a random password hash (user won't use it, only Google login)
+            random_pwd = binascii.hexlify(os.urandom(16)).decode("utf-8")
+            pwd_hash, pwd_salt = hash_password(random_pwd)
+
+            cursor.execute(
+                """
+                INSERT INTO users (id, email, username, password_hash, password_salt, is_pro, credits, failed_login_attempts, locked_until)
+                VALUES (?, ?, ?, ?, ?, 0, 1, 0, NULL)
+                """,
+                (user_id, google_email, google_name, pwd_hash, pwd_salt)
+            )
+            logger.info(f"New user registered via Google: {user_id} ({google_email})")
+            return {
+                "success": True,
+                "user": {
+                    "id": user_id,
+                    "email": google_email,
+                    "username": google_name,
+                    "isPro": False,
+                    "credits": 1
+                }
+            }
+
+class GoogleAccessSchema(BaseModel):
+    email: str
+    name: str
+    sub: str  # Google's unique user ID
+
+@app.post("/api/auth/google-access")
+def google_access_auth(data: GoogleAccessSchema):
+    """
+    Handles Google OAuth access_token flow.
+    The Next.js gateway has already fetched userInfo from Google,
+    so we just upsert the user in the local database.
+    """
+    google_email = data.email.lower().strip()
+    google_name = data.name or google_email.split("@")[0]
+
+    if not google_email:
+        raise HTTPException(status_code=400, detail="Google account has no email.")
+
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT * FROM users WHERE email = ?", (google_email,))
+        existing = cursor.fetchone()
+
+        if existing:
+            logger.info(f"Google access login for existing user: {existing['id']}")
+            return {
+                "success": True,
+                "user": {
+                    "id": existing["id"],
+                    "email": existing["email"],
+                    "username": existing["username"],
+                    "isPro": bool(existing["is_pro"]),
+                    "credits": existing["credits"]
+                }
+            }
+        else:
+            user_id = str(uuid.uuid4())
+            random_pwd = binascii.hexlify(os.urandom(16)).decode("utf-8")
+            pwd_hash, pwd_salt = hash_password(random_pwd)
+
+            cursor.execute(
+                """
+                INSERT INTO users (id, email, username, password_hash, password_salt, is_pro, credits, failed_login_attempts, locked_until)
+                VALUES (?, ?, ?, ?, ?, 0, 1, 0, NULL)
+                """,
+                (user_id, google_email, google_name, pwd_hash, pwd_salt)
+            )
+            logger.info(f"New user via Google access: {user_id} ({google_email})")
+            return {
+                "success": True,
+                "user": {
+                    "id": user_id,
+                    "email": google_email,
+                    "username": google_name,
+                    "isPro": False,
+                    "credits": 1
+                }
+            }
+
+@app.post("/api/auth/update-password")
+def update_password(data: UpdatePasswordSchema):
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT * FROM users WHERE id = ?", (data.userId,))
+        user = cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        if not verify_password(data.oldPassword, user["password_salt"], user["password_hash"]):
+            raise HTTPException(status_code=401, detail="Incorrect current password")
+            
+        pwd_hash, pwd_salt = hash_password(data.newPassword)
+        cursor.execute("UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?", (pwd_hash, pwd_salt, data.userId))
+        logger.info(f"Password updated for user: {data.userId}")
+        return {"success": True, "message": "Password updated successfully"}
+
+@app.post("/api/auth/contact")
+def receive_contact(data: ContactSchema):
+    success = send_contact_email(data.name, data.email, data.message)
+    return {"success": True, "message": "Message received"}
 
 @app.post("/api/auth/login")
 def login(data: LoginSchema):

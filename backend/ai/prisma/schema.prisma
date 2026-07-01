@@ -32,3 +32,19 @@ model Question {
   idealAnswer  String
   audioDuration Int?
 }
+
+model QuestionBankItem {
+  id           String   @id @default(uuid())
+  language     String   @default("en-US")
+  role         String
+  level        String
+  category     String
+  questionText String
+  idealAnswer  String
+  createdAt    DateTime @default(now())
+
+  @@unique([language, role, level, questionText])
+  @@index([language])
+  @@index([role, level])
+  @@index([category])
+}

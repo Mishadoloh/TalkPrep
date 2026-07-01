@@ -3,8 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
-import Header from "@/components/Header";
-import BackgroundBlobs from "@/components/BackgroundBlobs";
+
 import {
   TrendingUp,
   Award,
@@ -108,8 +107,8 @@ export default function ResultPage() {
 
   return (
     <>
-      <Header />
-      <BackgroundBlobs />
+
+
 
       <main className="container" style={{ flex: 1, padding: "40px 24px" }}>
         {/* Back navigation */}
