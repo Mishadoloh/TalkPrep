@@ -95,7 +95,7 @@ def seed_question_bank(cursor):
     for item in DEFAULT_QUESTION_BANK:
         cursor.execute(
             """
-            INSERT OR IGNORE INTO question_bank_items
+            INSERT INTO question_bank_items
                 (id, language, role, level, category, question_text, ideal_answer)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
@@ -170,7 +170,7 @@ def run_migrations():
                 question_text TEXT NOT NULL,
                 ideal_answer TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(role, level, question_text)
+                UNIQUE(language, role, level, question_text)
             );
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_question_bank_role_level ON question_bank_items(role, level);")
@@ -187,7 +187,7 @@ def run_migrations():
                 question_text TEXT NOT NULL,
                 ideal_answer TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(role, level, question_text)
+                UNIQUE(language, role, level, question_text)
             );
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_question_bank_role_level ON question_bank_items(role, level);")
@@ -199,8 +199,13 @@ def run_migrations():
             cursor.execute("ALTER TABLE question_bank_items ADD COLUMN language TEXT NOT NULL DEFAULT 'en-US';")
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_question_bank_language ON question_bank_items(language);")
+        cursor.execute("DELETE FROM question_bank_items;")
 
         seed_question_bank(cursor)
+        cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_question_bank_language_role_level_question
+        ON question_bank_items(language, role, level, question_text);
+        """)
         cursor.execute("SELECT COUNT(*) AS count FROM question_bank_items")
         question_bank_count = cursor.fetchone()["count"]
 
