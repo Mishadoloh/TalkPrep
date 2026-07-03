@@ -600,6 +600,9 @@ def get_question_bank(
     level: Optional[str] = None,
     category: Optional[str] = None,
     language: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
 ):
     filters = []
     params = []
@@ -616,18 +619,28 @@ def get_question_bank(
     if language:
         filters.append("language = ?")
         params.append(language)
+    if search:
+        filters.append("(question_text LIKE ? OR ideal_answer LIKE ? OR category LIKE ?)")
+        search_pattern = f"%{search.strip()}%"
+        params.extend([search_pattern, search_pattern, search_pattern])
 
     where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+    safe_limit = max(1, min(int(limit or 200), 500))
+    safe_offset = max(0, int(offset or 0))
 
     with get_db_cursor() as cursor:
+        cursor.execute(f"SELECT COUNT(*) AS total FROM question_bank_items {where_clause}", params)
+        total = cursor.fetchone()["total"]
+
         cursor.execute(
             f"""
             SELECT id, language, role, level, category, question_text, ideal_answer
             FROM question_bank_items
             {where_clause}
             ORDER BY language, role, level, category, question_text
+            LIMIT ? OFFSET ?
             """,
-            params
+            (*params, safe_limit, safe_offset)
         )
         questions = [
             {
@@ -642,14 +655,18 @@ def get_question_bank(
             for row in cursor.fetchall()
         ]
 
-        cursor.execute(f"SELECT COUNT(*) AS total FROM question_bank_items {where_clause}", params)
-        total = cursor.fetchone()["total"]
         cursor.execute(f"SELECT COUNT(DISTINCT role) AS roles FROM question_bank_items {where_clause}", params)
         roles = cursor.fetchone()["roles"]
         cursor.execute(f"SELECT COUNT(DISTINCT category) AS categories FROM question_bank_items {where_clause}", params)
         categories = cursor.fetchone()["categories"]
         cursor.execute("SELECT language, COUNT(*) AS count FROM question_bank_items GROUP BY language ORDER BY language")
         languages = {row["language"]: row["count"] for row in cursor.fetchall()}
+        cursor.execute("SELECT COUNT(*) AS total FROM question_bank_items")
+        global_total = cursor.fetchone()["total"]
+        cursor.execute("SELECT COUNT(DISTINCT role) AS roles FROM question_bank_items")
+        global_roles = cursor.fetchone()["roles"]
+        cursor.execute("SELECT COUNT(DISTINCT category) AS categories FROM question_bank_items")
+        global_categories = cursor.fetchone()["categories"]
 
     return {
         "success": True,
@@ -658,6 +675,14 @@ def get_question_bank(
             "roles": roles,
             "categories": categories,
             "languages": languages,
+            "limit": safe_limit,
+            "offset": safe_offset,
+            "hasMore": safe_offset + len(questions) < total,
+            "global": {
+                "total": global_total,
+                "roles": global_roles,
+                "categories": global_categories,
+            },
         },
         "questions": questions,
     }

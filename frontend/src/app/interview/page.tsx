@@ -190,22 +190,31 @@ export default function InterviewPage() {
   const [companySearch, setCompanySearch] = useState("");
   const [history, setHistory] = useState<InterviewHistoryItem[]>([]);
   const [questionBank, setQuestionBank] = useState<QuestionBankItem[]>([]);
-  const [bankStats, setBankStats] = useState({ total: 33, roles: 4, categories: 18 });
+  const [bankStats, setBankStats] = useState({ total: 23040, roles: 16, categories: 24 });
   const [historyLoading, setHistoryLoading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState("");
+  const selectedRole = specialties.find((item) => item.id === selectedSpecialty) ?? specialties[0];
+  const normalizedLevel = level === "Middle" ? "Mid" : level;
 
   useEffect(() => {
     const loadQuestionBank = async () => {
       try {
-        const res = await fetch("/api/question-bank?language=uk-UA");
+        const params = new URLSearchParams({
+          language: "uk-UA",
+          role: selectedRole.role,
+          level: normalizedLevel,
+          limit: "120",
+        });
+        const res = await fetch(`/api/question-bank?${params.toString()}`);
         const data = await res.json();
         if (res.ok && data.questions) {
           setQuestionBank(data.questions);
+          const globalStats = data.stats?.global;
           setBankStats({
-            total: data.stats?.total ?? data.questions.length,
-            roles: data.stats?.roles ?? 4,
-            categories: data.stats?.categories ?? 18,
+            total: globalStats?.total ?? data.stats?.total ?? data.questions.length,
+            roles: globalStats?.roles ?? data.stats?.roles ?? 16,
+            categories: globalStats?.categories ?? data.stats?.categories ?? 24,
           });
         }
       } catch {
@@ -214,7 +223,7 @@ export default function InterviewPage() {
     };
 
     loadQuestionBank();
-  }, []);
+  }, [selectedRole.role, normalizedLevel]);
 
   useEffect(() => {
     if (tab !== "history") return;
@@ -235,20 +244,14 @@ export default function InterviewPage() {
     loadHistory();
   }, [tab]);
 
-  const selectedRole = specialties.find((item) => item.id === selectedSpecialty) ?? specialties[0];
-  const normalizedLevel = level === "Middle" ? "Mid" : level;
   const bankQuestionTotal = bankStats.total;
 
   const filteredQuestions = useMemo(() => {
     const search = questionSearch.trim().toLowerCase();
-    const source = questionBank.length
-      ? questionBank
-          .filter((item) => item.level === normalizedLevel)
-          .map((item) => item.questionText)
-      : questionList;
+    const source = questionBank.length ? questionBank.map((item) => item.questionText) : questionList;
 
     return source.filter((item) => item.toLowerCase().includes(search));
-  }, [questionSearch, questionBank, normalizedLevel]);
+  }, [questionSearch, questionBank]);
 
   const startInterview = async () => {
     setStarting(true);
