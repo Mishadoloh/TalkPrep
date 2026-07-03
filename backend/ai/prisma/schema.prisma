@@ -45,6 +45,14 @@ model QuestionBankItem {
 
   @@unique([language, role, level, questionText])
   @@index([language])
+  @@index([language, role, level])
+  @@index([language, category])
   @@index([role, level])
   @@index([category])
+}
+
+model QuestionBankMeta {
+  key       String   @id
+  value     String
+  updatedAt DateTime @default(now())
 }

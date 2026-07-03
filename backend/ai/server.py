@@ -8,6 +8,7 @@ import re
 import queue
 import threading
 import contextvars
+import hashlib
 import json
 import shutil
 from datetime import datetime
@@ -52,6 +53,10 @@ app.add_middleware(
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "interviews.db")
 AUTH_SERVICE_URL = "http://localhost:3010"
+QUESTION_BANK_HASH = hashlib.sha256(
+    json.dumps(DEFAULT_QUESTION_BANK, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+).hexdigest()
+QUESTION_BANK_COUNT = len(DEFAULT_QUESTION_BANK)
 
 # Multi-language Filler word regex dictionary
 FILLER_PATTERNS = {
@@ -92,23 +97,39 @@ def get_db_cursor():
         conn.close()
 
 def seed_question_bank(cursor):
-    for item in DEFAULT_QUESTION_BANK:
-        cursor.execute(
-            """
-            INSERT INTO question_bank_items
-                (id, language, role, level, category, question_text, ideal_answer)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                str(uuid.uuid4()),
-                item["language"],
-                item["role"],
-                item["level"],
-                item["category"],
-                item["question"],
-                item["ideal"],
-            )
+    rows = [
+        (
+            str(uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"talkprep-question:{item['language']}:{item['role']}:{item['level']}:{item['category']}:{item['question']}"
+            )),
+            item["language"],
+            item["role"],
+            item["level"],
+            item["category"],
+            item["question"],
+            item["ideal"],
         )
+        for item in DEFAULT_QUESTION_BANK
+    ]
+    cursor.executemany(
+        """
+        INSERT INTO question_bank_items
+            (id, language, role, level, category, question_text, ideal_answer)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows
+    )
+
+def upsert_question_bank_meta(cursor):
+    cursor.execute("DELETE FROM question_bank_meta WHERE key IN ('content_hash', 'content_count')")
+    cursor.executemany(
+        "INSERT INTO question_bank_meta (key, value) VALUES (?, ?)",
+        [
+            ("content_hash", QUESTION_BANK_HASH),
+            ("content_count", str(QUESTION_BANK_COUNT)),
+        ]
+    )
 
 def run_migrations():
     logger.info("Initializing AI database migrations check...")
@@ -193,24 +214,58 @@ def run_migrations():
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_question_bank_role_level ON question_bank_items(role, level);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_question_bank_category ON question_bank_items(category);")
 
+        if current_version < 4:
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS question_bank_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_question_bank_language_role_level ON question_bank_items(language, role, level);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_question_bank_language_category ON question_bank_items(language, category);")
+            cursor.execute("INSERT INTO schema_migrations (version, description) VALUES (4, 'Add question bank sync metadata and composite indexes')")
+        else:
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS question_bank_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_question_bank_language_role_level ON question_bank_items(language, role, level);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_question_bank_language_category ON question_bank_items(language, category);")
+
         cursor.execute("PRAGMA table_info(question_bank_items)")
         question_bank_columns = {row["name"] for row in cursor.fetchall()}
         if "language" not in question_bank_columns:
             cursor.execute("ALTER TABLE question_bank_items ADD COLUMN language TEXT NOT NULL DEFAULT 'en-US';")
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_question_bank_language ON question_bank_items(language);")
-        cursor.execute("DELETE FROM question_bank_items;")
+        cursor.execute("SELECT value FROM question_bank_meta WHERE key = 'content_hash'")
+        hash_row = cursor.fetchone()
+        stored_hash = hash_row["value"] if hash_row else None
+        cursor.execute("SELECT COUNT(*) AS count FROM question_bank_items")
+        stored_count = cursor.fetchone()["count"]
 
-        seed_question_bank(cursor)
         cursor.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS ux_question_bank_language_role_level_question
         ON question_bank_items(language, role, level, question_text);
         """)
+
+        if stored_hash != QUESTION_BANK_HASH or stored_count != QUESTION_BANK_COUNT:
+            logger.info("Question bank content changed or missing. Rebuilding question bank table...")
+            cursor.execute("DELETE FROM question_bank_items;")
+            seed_question_bank(cursor)
+            upsert_question_bank_meta(cursor)
+        else:
+            logger.info("Question bank is up to date; skipping reseed.")
+
         cursor.execute("SELECT COUNT(*) AS count FROM question_bank_items")
         question_bank_count = cursor.fetchone()["count"]
 
         logger.info(
-            f"AI database migrations applied. Current Schema Version: {max(current_version, 3)}. "
+            f"AI database migrations applied. Current Schema Version: {max(current_version, 4)}. "
             f"Question bank rows: {question_bank_count}"
         )
 
