@@ -289,6 +289,54 @@ def get_http_session(retries=3, backoff_factor=0.3):
 http_client = get_http_session()
 
 # --- TELEMETRY HEALTH DIAGNOSTICS ---
+def get_question_bank_diagnostics(cursor):
+    cursor.execute("SELECT MAX(version) AS schema_version FROM schema_migrations")
+    schema_row = cursor.fetchone()
+    schema_version = schema_row["schema_version"] if schema_row else None
+
+    cursor.execute("SELECT COUNT(*) AS total FROM question_bank_items")
+    question_bank_total = cursor.fetchone()["total"]
+    cursor.execute("SELECT COUNT(DISTINCT question_text) AS unique_questions FROM question_bank_items")
+    unique_questions = cursor.fetchone()["unique_questions"]
+    cursor.execute("SELECT COUNT(DISTINCT role) AS roles FROM question_bank_items")
+    roles = cursor.fetchone()["roles"]
+    cursor.execute("SELECT COUNT(DISTINCT category) AS categories FROM question_bank_items")
+    categories = cursor.fetchone()["categories"]
+    cursor.execute("SELECT language, COUNT(*) AS count FROM question_bank_items GROUP BY language ORDER BY language")
+    languages = {row["language"]: row["count"] for row in cursor.fetchall()}
+    cursor.execute("SELECT level, COUNT(*) AS count FROM question_bank_items GROUP BY level ORDER BY level")
+    levels = {row["level"]: row["count"] for row in cursor.fetchall()}
+    cursor.execute("""
+        SELECT role, COUNT(*) AS count
+        FROM question_bank_items
+        GROUP BY role
+        ORDER BY count DESC, role
+        LIMIT 12
+    """)
+    top_roles = [{"role": row["role"], "count": row["count"]} for row in cursor.fetchall()]
+    cursor.execute("SELECT value FROM question_bank_meta WHERE key = 'content_hash'")
+    hash_row = cursor.fetchone()
+    content_hash = hash_row["value"] if hash_row else None
+
+    return {
+        "schemaVersion": schema_version,
+        "questionBank": {
+            "total": question_bank_total,
+            "uniqueQuestions": unique_questions,
+            "expected": QUESTION_BANK_COUNT,
+            "contentHash": content_hash,
+            "expectedHash": QUESTION_BANK_HASH,
+            "synced": question_bank_total == QUESTION_BANK_COUNT and content_hash == QUESTION_BANK_HASH,
+            "coverage": {
+                "roles": roles,
+                "categories": categories,
+                "languages": languages,
+                "levels": levels,
+                "topRoles": top_roles,
+            },
+        },
+    }
+
 @app.get("/healthz")
 def health_check():
     db_status = "healthy"
@@ -307,24 +355,7 @@ def health_check():
     try:
         with get_db_cursor() as cursor:
             cursor.execute("SELECT 1")
-            cursor.execute("SELECT MAX(version) AS schema_version FROM schema_migrations")
-            schema_row = cursor.fetchone()
-            db_details["schemaVersion"] = schema_row["schema_version"] if schema_row else None
-
-            cursor.execute("SELECT COUNT(*) AS total FROM question_bank_items")
-            question_bank_total = cursor.fetchone()["total"]
-            cursor.execute("SELECT COUNT(DISTINCT question_text) AS unique_questions FROM question_bank_items")
-            unique_questions = cursor.fetchone()["unique_questions"]
-            cursor.execute("SELECT value FROM question_bank_meta WHERE key = 'content_hash'")
-            hash_row = cursor.fetchone()
-            content_hash = hash_row["value"] if hash_row else None
-
-            db_details["questionBank"].update({
-                "total": question_bank_total,
-                "uniqueQuestions": unique_questions,
-                "contentHash": content_hash,
-                "synced": question_bank_total == QUESTION_BANK_COUNT and content_hash == QUESTION_BANK_HASH,
-            })
+            db_details = get_question_bank_diagnostics(cursor)
     except Exception as e:
         db_status = "unhealthy"
         db_error = str(e)
@@ -678,6 +709,17 @@ class StartInterviewSchema(BaseModel):
 class AnswerSchema(BaseModel):
     questionId: str
     answerText: str
+
+@app.get("/api/question-bank/stats")
+def get_question_bank_stats():
+    with get_db_cursor() as cursor:
+        diagnostics = get_question_bank_diagnostics(cursor)
+
+    return {
+        "success": True,
+        "stats": diagnostics["questionBank"],
+        "schemaVersion": diagnostics["schemaVersion"],
+    }
 
 @app.get("/api/question-bank")
 def get_question_bank(
