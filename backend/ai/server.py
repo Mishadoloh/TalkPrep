@@ -293,9 +293,38 @@ http_client = get_http_session()
 def health_check():
     db_status = "healthy"
     db_error = None
+    db_details = {
+        "schemaVersion": None,
+        "questionBank": {
+            "total": 0,
+            "uniqueQuestions": 0,
+            "expected": QUESTION_BANK_COUNT,
+            "contentHash": None,
+            "expectedHash": QUESTION_BANK_HASH,
+            "synced": False,
+        },
+    }
     try:
         with get_db_cursor() as cursor:
             cursor.execute("SELECT 1")
+            cursor.execute("SELECT MAX(version) AS schema_version FROM schema_migrations")
+            schema_row = cursor.fetchone()
+            db_details["schemaVersion"] = schema_row["schema_version"] if schema_row else None
+
+            cursor.execute("SELECT COUNT(*) AS total FROM question_bank_items")
+            question_bank_total = cursor.fetchone()["total"]
+            cursor.execute("SELECT COUNT(DISTINCT question_text) AS unique_questions FROM question_bank_items")
+            unique_questions = cursor.fetchone()["unique_questions"]
+            cursor.execute("SELECT value FROM question_bank_meta WHERE key = 'content_hash'")
+            hash_row = cursor.fetchone()
+            content_hash = hash_row["value"] if hash_row else None
+
+            db_details["questionBank"].update({
+                "total": question_bank_total,
+                "uniqueQuestions": unique_questions,
+                "contentHash": content_hash,
+                "synced": question_bank_total == QUESTION_BANK_COUNT and content_hash == QUESTION_BANK_HASH,
+            })
     except Exception as e:
         db_status = "unhealthy"
         db_error = str(e)
@@ -308,7 +337,8 @@ def health_check():
         "timestamp": datetime.now().isoformat(),
         "database": {
             "status": db_status,
-            "error": db_error
+            "error": db_error,
+            **db_details,
         },
         "background_queue": {
             "size": grading_queue.qsize()
