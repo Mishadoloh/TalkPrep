@@ -72,6 +72,15 @@ interface QuestionBankItem {
   idealAnswer: string;
 }
 
+interface QuestionBankStats {
+  total: number;
+  roles: number;
+  categories: number;
+  languages: Record<string, number>;
+  levels: Record<string, number>;
+  synced: boolean;
+}
+
 const tabs: Array<{ key: TabKey; label: string; Icon: typeof Mic }> = [
   { key: "simulation", label: "Симуляція", Icon: Mic },
   { key: "bank", label: "Банк питань", Icon: Briefcase },
@@ -190,7 +199,14 @@ export default function InterviewPage() {
   const [companySearch, setCompanySearch] = useState("");
   const [history, setHistory] = useState<InterviewHistoryItem[]>([]);
   const [questionBank, setQuestionBank] = useState<QuestionBankItem[]>([]);
-  const [bankStats, setBankStats] = useState({ total: 23040, roles: 16, categories: 24 });
+  const [bankStats, setBankStats] = useState<QuestionBankStats>({
+    total: 23040,
+    roles: 16,
+    categories: 24,
+    languages: { "en-US": 11520, "uk-UA": 11520 },
+    levels: { Junior: 7680, Mid: 7680, Senior: 7680 },
+    synced: true,
+  });
   const [historyLoading, setHistoryLoading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState("");
@@ -211,11 +227,12 @@ export default function InterviewPage() {
         if (res.ok && data.questions) {
           setQuestionBank(data.questions);
           const globalStats = data.stats?.global;
-          setBankStats({
+          setBankStats((current) => ({
+            ...current,
             total: globalStats?.total ?? data.stats?.total ?? data.questions.length,
             roles: globalStats?.roles ?? data.stats?.roles ?? 16,
             categories: globalStats?.categories ?? data.stats?.categories ?? 24,
-          });
+          }));
         }
       } catch {
         setQuestionBank([]);
@@ -224,6 +241,29 @@ export default function InterviewPage() {
 
     loadQuestionBank();
   }, [selectedRole.role, normalizedLevel]);
+
+  useEffect(() => {
+    const loadQuestionBankStats = async () => {
+      try {
+        const res = await fetch("/api/question-bank/stats", { cache: "no-store" });
+        const data = await res.json();
+        const coverage = data.stats?.coverage;
+
+        if (res.ok && data.stats && coverage) {
+          setBankStats({
+            total: data.stats.total ?? 23040,
+            roles: coverage.roles ?? 16,
+            categories: coverage.categories ?? 24,
+            languages: coverage.languages ?? { "en-US": 11520, "uk-UA": 11520 },
+            levels: coverage.levels ?? { Junior: 7680, Mid: 7680, Senior: 7680 },
+            synced: Boolean(data.stats.synced),
+          });
+        }
+      } catch {}
+    };
+
+    loadQuestionBankStats();
+  }, []);
 
   useEffect(() => {
     if (tab !== "history") return;
@@ -245,6 +285,9 @@ export default function InterviewPage() {
   }, [tab]);
 
   const bankQuestionTotal = bankStats.total;
+  const bankLanguageTotal = Object.keys(bankStats.languages).length;
+  const bankLevelTotal = Object.keys(bankStats.levels).length;
+  const bankSyncLabel = bankStats.synced ? "OK" : "...";
 
   const filteredQuestions = useMemo(() => {
     const search = questionSearch.trim().toLowerCase();
@@ -460,10 +503,13 @@ export default function InterviewPage() {
           </h2>
           <p style={{ marginBottom: 28 }}>Перевірені технічні та поведінкові питання від топ-компаній — оновлюються постійно.</p>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 28 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, marginBottom: 28 }}>
             <Metric value={String(bankStats.roles)} label="ролей" />
             <Metric value={bankQuestionTotal.toLocaleString("uk-UA")} label="питань усього" />
-            <Metric value={String(bankStats.categories)} label="тем" green />
+            <Metric value={String(bankStats.categories)} label="тем" />
+            <Metric value={String(bankLanguageTotal)} label="мови" />
+            <Metric value={String(bankLevelTotal)} label="рівні" />
+            <Metric value={bankSyncLabel} label="БД" green={bankStats.synced} />
           </div>
 
           <SearchBox value={companySearch} onChange={setCompanySearch} placeholder="Пошук серед компаній..." />
