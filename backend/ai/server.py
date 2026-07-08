@@ -860,6 +860,7 @@ def start_interview(data: StartInterviewSchema, x_user_id: str = Header(None)):
         role_questions = get_question_bank_items(data.role, data.level, data.language, data.questionCount)
         
     interview_id = str(uuid.uuid4())
+    started_questions = []
 
     with get_db_cursor() as cursor:
         cursor.execute(
@@ -867,15 +868,17 @@ def start_interview(data: StartInterviewSchema, x_user_id: str = Header(None)):
             (interview_id, x_user_id, data.role, data.level, data.language, "IN_PROGRESS")
         )
         for q in role_questions:
+            question_id = str(uuid.uuid4())
             cursor.execute(
                 "INSERT INTO questions (id, interview_id, question_text, ideal_answer, score, critique) VALUES (?, ?, ?, ?, NULL, NULL)",
-                (str(uuid.uuid4()), interview_id, q["q"], q["ideal"])
+                (question_id, interview_id, q["q"], q["ideal"])
             )
+            started_questions.append({"id": question_id, "questionText": q["q"]})
 
     return {
         "success": True,
         "interviewId": interview_id,
-        "questions": [{"questionText": q["q"]} for q in role_questions],
+        "questions": started_questions,
     }
 
 @app.post("/api/interview/{interview_id}/answer")
@@ -960,7 +963,7 @@ def get_interview(interview_id: str, x_user_id: str = Header(None)):
         if interview["user_id"] != x_user_id:
             raise HTTPException(status_code=403, detail="Forbidden")
 
-        cursor.execute("SELECT * FROM questions WHERE interview_id = ?", (interview_id,))
+        cursor.execute("SELECT * FROM questions WHERE interview_id = ? ORDER BY rowid ASC", (interview_id,))
         questions_rows = cursor.fetchall()
         
         questions = []
@@ -1000,7 +1003,7 @@ def get_history(x_user_id: str = Header(None)):
         
         history = []
         for i in interviews_rows:
-            cursor.execute("SELECT * FROM questions WHERE interview_id = ?", (i["id"],))
+            cursor.execute("SELECT * FROM questions WHERE interview_id = ? ORDER BY rowid ASC", (i["id"],))
             questions_rows = cursor.fetchall()
             
             questions = []
