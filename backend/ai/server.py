@@ -754,6 +754,13 @@ def get_question_bank(
     where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
     safe_limit = max(1, min(int(limit or 200), 500))
     safe_offset = max(0, int(offset or 0))
+    active_filters = {
+        "role": role,
+        "level": normalize_level(level) if level else None,
+        "category": category,
+        "language": language,
+        "search": search.strip() if search else None,
+    }
 
     with get_db_cursor() as cursor:
         cursor.execute(f"SELECT COUNT(*) AS total FROM question_bank_items {where_clause}", params)
@@ -795,6 +802,9 @@ def get_question_bank(
         cursor.execute("SELECT COUNT(DISTINCT category) AS categories FROM question_bank_items")
         global_categories = cursor.fetchone()["categories"]
 
+    returned = len(questions)
+    has_more = safe_offset + returned < total
+
     return {
         "success": True,
         "stats": {
@@ -804,7 +814,12 @@ def get_question_bank(
             "languages": languages,
             "limit": safe_limit,
             "offset": safe_offset,
-            "hasMore": safe_offset + len(questions) < total,
+            "returned": returned,
+            "page": (safe_offset // safe_limit) + 1,
+            "totalPages": max(1, (total + safe_limit - 1) // safe_limit),
+            "nextOffset": safe_offset + returned if has_more else None,
+            "hasMore": has_more,
+            "filters": {key: value for key, value in active_filters.items() if value},
             "global": {
                 "total": global_total,
                 "roles": global_roles,

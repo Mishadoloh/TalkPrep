@@ -13,7 +13,11 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: data.detail || data.error || "Failed to load question bank" }, { status: response.status });
     }
 
-    return NextResponse.json(data);
+    return NextResponse.json(data, {
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    });
   } catch (error) {
     console.error("Question Bank proxy error:", error);
     return NextResponse.json({ error: "AI microservice unreachable" }, { status: 502 });
